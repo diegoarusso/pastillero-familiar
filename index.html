@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Pastillero Pro (Cloud)</title>
+    <title>Pastillero 2.0</title>
     <meta name="theme-color" content="#ffffff">
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -23,7 +23,7 @@
 </head>
 <body class="text-gray-800 h-screen overflow-hidden flex flex-col">
 
-    <div id="loader"><div class="spinner mb-4"></div><p class="text-gray-500 text-sm font-medium">Cargando...</p></div>
+    <div id="loader"><div class="spinner mb-4"></div><p class="text-gray-500 text-sm font-medium">Actualizando sistema...</p></div>
     <div id="sync-status" class="sync-badge"></div>
     <div id="header-container"></div>
     <div id="main-container" class="flex-1 overflow-y-auto bg-gray-50 relative overscroll-contain">
@@ -37,6 +37,19 @@
         const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlwcmVweXFwanVid2x3bGF5bGFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQwMDEyODcsImV4cCI6MjA3OTU3NzI4N30.fZILFUCwf8Ckhm8TKfGEVI0aK0j4HQ1Kzhdwxf1tN_o';
         const { createClient } = supabase;
         const _db = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        // --- HELPERS DE FECHA (SOLUCIÓN AL BUG DE ZONA HORARIA) ---
+        function getLocalToday() {
+            const now = new Date();
+            const year = now.getFullYear();
+            const month = String(now.getMonth() + 1).padStart(2, '0');
+            const day = String(now.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        }
+
+        function getLocalTime() {
+            return new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', hour12: false});
+        }
 
         const I = {
             Pill: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m10.5 20.5 10-10a4.95 4.95 0 1 0-7-7l-10 10a4.95 4.95 0 1 0 7 7Z"/><path d="m8.5 8.5 7 7"/></svg>',
@@ -68,8 +81,9 @@
             editId: null,
             meds: [],
             logs: [],
+            // Formulario ahora soporta array de horas
             form: { 
-                name: '', dose: '', time: '08:00', trackStock: false, stock: '', minStock: '5',
+                name: '', dose: '', times: ['08:00'], trackStock: false, stock: '', minStock: '5',
                 frequencyType: 'daily', frequencyDays: [], intervalDays: '', startDate: ''
             }
         };
@@ -96,7 +110,7 @@
         function isScheduledForToday(med) {
             if (med.track_stock && (med.stock === null || med.stock <= 0)) return false;
             const today = new Date();
-            const todayStr = today.toISOString().split('T')[0];
+            const todayStr = getLocalToday();
             if (!med.frequency_type || med.frequency_type === 'daily') return true;
             if (med.frequency_type === 'specific_days') {
                 if (!med.frequency_days) return false;
@@ -119,30 +133,44 @@
             setProfile: (id) => { store.currentProfile = id; render(); },
             setView: (v) => { store.view = v; render(); },
             
-            toggleTaken: async (medId) => {
+            // AHORA RECIBE HORA ESPECIFICA PARA NO CONFUNDIR TOMAS
+            toggleTaken: async (medId, specificTime) => {
                 setBusy(true);
                 const med = store.meds.find(m => m.id === medId);
-                const today = new Date().toISOString().split('T')[0];
-                const nowTime = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-                const existingLog = store.logs.find(l => l.med_id === medId && l.date === today && l.time === med.time);
+                const today = getLocalToday();
+                const nowTime = getLocalTime();
+                
+                // Buscamos log exacto por ID, Fecha Y HORA específica
+                const existingLog = store.logs.find(l => l.med_id === medId && l.date === today && l.time === specificTime);
 
                 try {
                     if (existingLog) {
+                        // Desmarcar
                         await _db.from('logs').delete().eq('id', existingLog.id);
                         let newStock = med.stock;
                         if(med.track_stock) {
-                            newStock = (med.stock || 0) + 1;
+                            newStock = (parseInt(med.stock)||0) + 1;
                             await _db.from('medications').update({ stock: newStock }).eq('id', medId);
                         }
                         store.logs = store.logs.filter(l => l.id !== existingLog.id);
                         med.stock = newStock;
                     } else {
-                        const newLog = { med_id: med.id, profile_id: store.currentProfile, date: today, time: med.time, taken_at: nowTime, name: med.name, dose: med.dose };
+                        // Marcar
+                        const newLog = { 
+                            med_id: med.id, 
+                            profile_id: store.currentProfile, 
+                            date: today, 
+                            time: specificTime, // Guardamos la hora programada 
+                            taken_at: nowTime, 
+                            name: med.name, 
+                            dose: med.dose 
+                        };
                         const { data, error } = await _db.from('logs').insert(newLog).select();
                         if(error) throw error;
+                        
                         let newStock = med.stock;
                         if(med.track_stock) {
-                            newStock = Math.max(0, (med.stock || 0) - 1);
+                            newStock = Math.max(0, (parseInt(med.stock)||0) - 1);
                             await _db.from('medications').update({ stock: newStock }).eq('id', medId);
                         }
                         store.logs.push(data[0]);
@@ -151,37 +179,28 @@
                 } catch(e) { console.error(e); } finally { setBusy(false); render(); }
             },
 
-            // ELIMINAR LOG DE HISTORIAL (Y DEVOLVER STOCK SI CORRESPONDE)
             deleteLog: async (logId) => {
                 if(!confirm('¿Eliminar este registro?')) return;
                 setBusy(true);
-                
                 const log = store.logs.find(l => l.id === logId);
-                
                 try {
-                    // 1. Borrar de la DB
                     await _db.from('logs').delete().eq('id', logId);
-                    
-                    // 2. Si es regular y tenía control de stock, devolver la pastilla
                     if (log.med_id) {
                         const med = store.meds.find(m => m.id === log.med_id);
                         if (med && med.track_stock) {
-                            const newStock = (med.stock || 0) + 1;
+                            const newStock = (parseInt(med.stock)||0) + 1;
                             await _db.from('medications').update({ stock: newStock }).eq('id', med.id);
-                            med.stock = newStock; // Actualizar local
+                            med.stock = newStock;
                         }
                     }
-
-                    // 3. Actualizar lista local
                     store.logs = store.logs.filter(l => l.id !== logId);
-
                 } catch(e) { console.error(e); alert("Error borrando historial"); } finally { setBusy(false); render(); }
             },
 
             updateStock: async (id, amount) => {
                 setBusy(true);
                 const med = store.meds.find(m => m.id === id);
-                const newStock = Math.max(0, (med.stock || 0) + amount);
+                const newStock = Math.max(0, (parseInt(med.stock)||0) + amount);
                 med.stock = newStock;
                 render();
                 await _db.from('medications').update({ stock: newStock }).eq('id', id);
@@ -191,9 +210,15 @@
             saveForm: async () => {
                 if(!store.form.name) return;
                 setBusy(true);
+                
+                // Convertir array de horas a string (08:00,20:00)
+                const timesString = store.form.times.filter(t => t).join(',');
+
                 const medData = {
                     profile_id: store.currentProfile,
-                    name: store.form.name, dose: store.form.dose, time: store.form.time,
+                    name: store.form.name, 
+                    dose: store.form.dose, 
+                    time: timesString, // Guardamos lista de horas
                     track_stock: store.form.trackStock,
                     stock: store.form.trackStock ? parseInt(store.form.stock) : null,
                     min_stock: store.form.trackStock ? parseInt(store.form.minStock) : 5,
@@ -214,18 +239,17 @@
                 } catch(e) { console.error(e); alert("Error guardando"); } finally { setBusy(false); render(); }
             },
 
-            // GUARDAR OCASIONAL (Con hora custom)
             saveOccasional: async () => {
                 if(!store.form.name) return;
                 setBusy(true);
-                const now = new Date();
-                const time = store.form.time; // Usamos la hora del input
+                const today = getLocalToday();
+                const time = store.form.time; 
                 
                 const logData = {
                     profile_id: store.currentProfile,
                     name: store.form.name,
                     dose: store.form.dose,
-                    date: now.toISOString().split('T')[0],
+                    date: today,
                     time: time,
                     taken_at: time,
                     med_id: null
@@ -240,7 +264,7 @@
             },
 
             deleteMed: async () => {
-                if(!confirm('¿Eliminar?')) return;
+                if(!confirm('¿Eliminar medicamento?')) return;
                 setBusy(true);
                 await _db.from('medications').delete().eq('id', store.editId);
                 store.meds = store.meds.filter(m => m.id !== store.editId);
@@ -248,18 +272,35 @@
                 setBusy(false); render();
             },
 
+            // GESTIÓN DE HORARIOS MULTIPLES
+            addTimeSlot: () => {
+                store.form.times.push('');
+                render();
+            },
+            removeTimeSlot: (index) => {
+                store.form.times.splice(index, 1);
+                render();
+            },
+            updateTimeSlot: (index, val) => {
+                store.form.times[index] = val;
+                // No renderizamos aquí para no perder foco, igual que el nombre
+            },
+
             openModal: (type = 'regular', id = null) => {
                 store.modalType = type;
                 store.editId = id;
-                const today = new Date();
-                const todayStr = today.toISOString().split('T')[0];
-                const timeStr = today.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                const todayStr = getLocalToday();
+                const timeStr = getLocalTime();
                 
                 if (type === 'regular') {
                     if(id) {
                         const m = store.meds.find(x => x.id === id);
+                        // Convertir string "08:00,20:00" a array ["08:00", "20:00"]
+                        const timesArray = m.time ? m.time.split(',') : ['08:00'];
+                        
                         store.form = { 
-                            name: m.name, dose: m.dose, time: m.time, 
+                            name: m.name, dose: m.dose, 
+                            times: timesArray,
                             stock: m.stock, minStock: m.min_stock, trackStock: m.track_stock,
                             frequencyType: m.frequency_type || 'daily',
                             frequencyDays: m.frequency_days ? m.frequency_days.split(',') : [],
@@ -267,10 +308,9 @@
                             startDate: m.start_date || todayStr
                         };
                     } else {
-                        store.form = { name: '', dose: '', time: '08:00', stock: '', minStock: '5', trackStock: false, frequencyType: 'daily', frequencyDays: [], intervalDays: 14, startDate: todayStr };
+                        store.form = { name: '', dose: '', times: ['08:00'], stock: '', minStock: '5', trackStock: false, frequencyType: 'daily', frequencyDays: [], intervalDays: 14, startDate: todayStr };
                     }
                 } else {
-                    // Ocasional: Hora default = ahora
                     store.form = { name: '', dose: '', time: timeStr };
                 }
                 store.modal = true;
@@ -287,13 +327,12 @@
                 else store.form.frequencyDays.push(day);
                 render();
             },
-            
-            addToCalendar: (medId) => {
+            addToCalendar: (medId, specificTime) => {
                 const med = store.meds.find(m => m.id === medId);
                 if (!med) return;
                 const profile = store.profiles.find(p => p.id === med.profile_id);
                 const now = new Date();
-                const [hours, minutes] = med.time.split(':');
+                const [hours, minutes] = specificTime.split(':');
                 const startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes);
                 const endDate = new Date(startDate.getTime() + 10 * 60000);
                 const formatDate = (date) => date.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
@@ -316,14 +355,14 @@
         function render() {
             const p = store.profiles.find(x => x.id === store.currentProfile);
             const meds = store.meds.filter(m => m.profile_id === store.currentProfile);
-            const today = new Date().toISOString().split('T')[0];
+            const today = getLocalToday();
 
             document.getElementById('header-container').innerHTML = `
                 <div class="bg-white border-b border-gray-100 shadow-sm pt-safe">
                     <div class="max-w-md mx-auto px-4 py-3 flex justify-between items-center">
                         <div class="flex items-center gap-2">
                             <div class="bg-gradient-to-br from-blue-600 to-blue-700 p-2 rounded-xl text-white shadow-lg shadow-blue-200">${I.Pill}</div>
-                            <div><h1 class="text-lg font-bold leading-none text-gray-800">Pastillero</h1><p class="text-xs text-gray-500">Cloud Pro</p></div>
+                            <div><h1 class="text-lg font-bold leading-none text-gray-800">Pastillero</h1><p class="text-xs text-gray-500">Cloud 2.0</p></div>
                         </div>
                         <div class="w-9 h-9 rounded-full ${p.color} text-white flex items-center justify-center font-bold shadow border-2 border-white">${p.name[0]}</div>
                     </div>
@@ -335,16 +374,33 @@
             let content = '';
 
             if (store.view === 'home') {
-                const scheduledList = meds.filter(m => isScheduledForToday(m));
-                const list = scheduledList.map(m => ({ ...m, isTaken: store.logs.some(l => l.med_id === m.id && l.date === today && l.time === m.time) })).sort((a,b) => a.time.localeCompare(b.time));
-                const progress = list.length ? Math.round((list.filter(x => x.isTaken).length / list.length) * 100) : 0;
-                const alerts = meds.filter(m => m.track_stock && (m.stock <= m.min_stock));
+                // 1. Filtrar meds por día
+                const scheduledMeds = meds.filter(m => isScheduledForToday(m));
+                
+                // 2. Expandir Multi-Horarios ("08:00,20:00" -> 2 items en la lista)
+                let flatList = [];
+                scheduledMeds.forEach(m => {
+                    const times = m.time ? m.time.split(',') : ['??:??'];
+                    times.forEach(t => {
+                        flatList.push({
+                            ...m,
+                            displayTime: t, // Hora específica de esta tarjeta
+                            isTaken: store.logs.some(l => l.med_id === m.id && l.date === today && l.time === t)
+                        });
+                    });
+                });
+
+                // 3. Ordenar por hora
+                flatList.sort((a, b) => a.displayTime.localeCompare(b.displayTime));
+
+                const progress = flatList.length ? Math.round((flatList.filter(x => x.isTaken).length / flatList.length) * 100) : 0;
+                const alerts = meds.filter(m => m.track_stock && (parseInt(m.stock) <= parseInt(m.min_stock)));
 
                 content = `
                     <div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 mb-5">
                         <div class="flex justify-between items-end mb-3">
                             <div><p class="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Hoy</p><h2 class="text-3xl font-bold text-gray-800">${progress}%</h2></div>
-                            <div class="text-xs font-bold bg-gray-50 px-3 py-1.5 rounded-lg text-gray-600 border border-gray-100">${list.filter(x => x.isTaken).length}/${list.length} Dosis</div>
+                            <div class="text-xs font-bold bg-gray-50 px-3 py-1.5 rounded-lg text-gray-600 border border-gray-100">${flatList.filter(x => x.isTaken).length}/${flatList.length} Dosis</div>
                         </div>
                         <div class="h-3 bg-gray-100 rounded-full overflow-hidden"><div class="h-full transition-all duration-500 ${p.color}" style="width: ${progress}%"></div></div>
                     </div>
@@ -357,18 +413,18 @@
 
                     <h3 class="font-bold text-gray-700 text-lg mb-3 px-1">Agenda</h3>
                     <div class="space-y-3">
-                        ${list.length === 0 ? `<div class="text-center py-12 opacity-40"><div class="w-16 h-16 bg-gray-200 rounded-full mx-auto mb-3 flex items-center justify-center text-gray-400">${I.Pill}</div><p>Nada programado</p></div>` : list.map(m => `
+                        ${flatList.length === 0 ? `<div class="text-center py-12 opacity-40"><div class="w-16 h-16 bg-gray-200 rounded-full mx-auto mb-3 flex items-center justify-center text-gray-400">${I.Pill}</div><p>Nada programado para hoy</p></div>` : flatList.map(m => `
                             <div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex flex-col gap-3 transition-all ${m.isTaken ? 'opacity-60 bg-gray-50/50' : ''}">
                                 <div class="flex items-center justify-between">
                                     <div class="flex items-center gap-4 flex-1 cursor-pointer" onclick="Actions.openModal('regular', ${m.id})">
                                         <div class="w-12 h-12 rounded-xl flex items-center justify-center shrink-0 ${m.isTaken ? 'bg-green-100 text-green-600' : `${p.light} ${p.text}`}">${I.Pill}</div>
                                         <div><p class="font-bold text-gray-800 text-lg leading-tight">${m.name}</p><p class="text-sm text-gray-500 mt-0.5 font-medium">${m.dose}</p></div>
                                     </div>
-                                    <button onclick="Actions.toggleTaken(${m.id})" class="w-12 h-12 rounded-full border-2 flex items-center justify-center shrink-0 transition-all ${m.isTaken ? 'bg-green-500 border-green-500 text-white shadow-md scale-105' : 'border-gray-200 text-gray-300 active:border-blue-300'}">${m.isTaken ? I.Check : ''}</button>
+                                    <button onclick="Actions.toggleTaken(${m.id}, '${m.displayTime}')" class="w-12 h-12 rounded-full border-2 flex items-center justify-center shrink-0 transition-all ${m.isTaken ? 'bg-green-500 border-green-500 text-white shadow-md scale-105' : 'border-gray-200 text-gray-300 active:border-blue-300'}">${m.isTaken ? I.Check : ''}</button>
                                 </div>
                                 <div class="border-t border-gray-100 pt-2 mt-1 flex justify-between items-center">
-                                    <div class="flex items-center gap-1 text-xs text-gray-500 font-bold bg-gray-50 px-2 py-1 rounded-lg">${I.Clock} ${m.time}</div>
-                                    <button onclick="Actions.addToCalendar(${m.id})" class="text-xs font-bold text-blue-600 flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-blue-50 active:bg-blue-100 transition-colors">${I.Calendar} Alarma</button>
+                                    <div class="flex items-center gap-1 text-xs text-gray-500 font-bold bg-gray-50 px-2 py-1 rounded-lg">${I.Clock} ${m.displayTime}</div>
+                                    <button onclick="Actions.addToCalendar(${m.id}, '${m.displayTime}')" class="text-xs font-bold text-blue-600 flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-blue-50 active:bg-blue-100 transition-colors">${I.Calendar} Alarma</button>
                                 </div>
                             </div>
                         `).join('')}
@@ -403,7 +459,7 @@
                 content = `<h2 class="font-bold text-xl text-gray-800 mb-4 px-1">Stock</h2><div class="grid grid-cols-2 gap-3">${meds.filter(m => m.track_stock).map(m => `
                     <div class="bg-white border border-gray-100 p-4 rounded-2xl shadow-sm relative flex flex-col justify-between h-40">
                         <div onclick="Actions.openModal('regular', ${m.id})" class="absolute top-0 right-0 p-3 text-gray-300 hover:text-blue-500 cursor-pointer active:scale-90 transition-transform">${I.Edit}</div>
-                        <div class="mt-2"><h3 class="font-bold text-gray-800 truncate pr-6">${m.name}</h3><div class="mt-1 flex items-end gap-1"><span class="text-4xl font-bold ${m.stock <= m.min_stock ? 'text-red-500' : 'text-gray-700'}">${m.stock}</span><span class="text-xs text-gray-500 mb-1 font-medium">unid.</span></div></div>
+                        <div class="mt-2"><h3 class="font-bold text-gray-800 truncate pr-6">${m.name}</h3><div class="mt-1 flex items-end gap-1"><span class="text-4xl font-bold ${parseInt(m.stock) <= parseInt(m.min_stock) ? 'text-red-500' : 'text-gray-700'}">${m.stock}</span><span class="text-xs text-gray-500 mb-1 font-medium">unid.</span></div></div>
                         <div class="flex gap-2 mt-2"><button onclick="Actions.updateStock(${m.id}, -1)" class="flex-1 bg-red-50 text-red-600 rounded-xl font-bold text-xl py-2 active:bg-red-100 transition-colors">-</button><button onclick="Actions.updateStock(${m.id}, 1)" class="flex-1 bg-green-50 text-green-600 rounded-xl font-bold text-xl py-2 active:bg-green-100 transition-colors">+</button></div>
                     </div>`).join('')}</div><button onclick="Actions.openModal('regular'); Actions.updateForm('trackStock', true)" class="w-full py-4 border-2 border-dashed border-gray-300 rounded-2xl text-gray-400 font-bold flex items-center justify-center gap-2 mt-6 active:bg-gray-100 transition-colors">${I.Plus} Añadir Stock</button>`;
             }
@@ -411,17 +467,28 @@
             document.getElementById('app-content').innerHTML = content;
             document.getElementById('nav-container').innerHTML = `<div class="max-w-md mx-auto flex justify-around items-center h-16"><button onclick="Actions.setView('home')" class="flex flex-col items-center gap-1 w-1/4 ${store.view === 'home' ? 'text-blue-600' : 'text-gray-400'}">${I.Home}<span class="text-[10px] font-bold">Hoy</span></button><button onclick="Actions.setView('history')" class="flex flex-col items-center gap-1 w-1/4 ${store.view === 'history' ? 'text-blue-600' : 'text-gray-400'}">${I.History}<span class="text-[10px] font-bold">Historial</span></button><div class="relative -top-6 w-1/4 flex justify-center"><button onclick="Actions.openModal('regular')" class="bg-blue-600 text-white w-14 h-14 rounded-full shadow-xl shadow-blue-200 flex items-center justify-center border-4 border-white transform active:scale-95 transition-transform">${I.Plus}</button></div><button onclick="Actions.setView('stock')" class="flex flex-col items-center gap-1 w-1/4 ${store.view === 'stock' ? 'text-blue-600' : 'text-gray-400'}">${I.Stock}<span class="text-[10px] font-bold">Stock</span></button></div>`;
 
-            // RENDER MODAL
             if (store.modal) {
                 let modalContent = '';
                 
                 if (store.modalType === 'regular') {
+                    // FORMULARIO REGULAR MULTI-HORA
                     modalContent = `
                         <div class="space-y-5">
                             <div><label class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5 block">Nombre</label><input type="text" value="${store.form.name}" oninput="Actions.updateForm('name', this.value)" class="w-full p-4 bg-gray-50 rounded-xl font-bold text-lg border border-gray-200 outline-none focus:ring-2 focus:ring-blue-500 transition-all" placeholder="Ej: Ibuprofeno"></div>
                             <div class="flex gap-4">
-                                <div class="flex-1"><label class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5 block">Dosis</label><input type="text" value="${store.form.dose}" oninput="Actions.updateForm('dose', this.value)" class="w-full p-4 bg-gray-50 rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-blue-500" placeholder="500mg"></div>
-                                <div class="flex-1"><label class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5 block">Hora</label><input type="time" value="${store.form.time}" oninput="Actions.updateForm('time', this.value)" class="w-full p-4 bg-gray-50 rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-blue-500"></div>
+                                <div class="w-1/2"><label class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5 block">Dosis</label><input type="text" value="${store.form.dose}" oninput="Actions.updateForm('dose', this.value)" class="w-full p-4 bg-gray-50 rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-blue-500" placeholder="500mg"></div>
+                                <div class="w-1/2">
+                                    <label class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5 block">Horarios</label>
+                                    <div class="space-y-2">
+                                        ${store.form.times.map((t, i) => `
+                                            <div class="flex gap-1">
+                                                <input type="time" value="${t}" oninput="Actions.updateTimeSlot(${i}, this.value)" class="w-full p-4 bg-gray-50 rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-blue-500">
+                                                ${i > 0 ? `<button onclick="Actions.removeTimeSlot(${i})" class="px-2 text-red-400 hover:text-red-600 font-bold">×</button>` : ''}
+                                            </div>
+                                        `).join('')}
+                                        <button onclick="Actions.addTimeSlot()" class="text-xs text-blue-600 font-bold py-1">+ Agregar hora</button>
+                                    </div>
+                                </div>
                             </div>
                             <div class="bg-gray-50 p-4 rounded-2xl border border-gray-200">
                                 <label class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Frecuencia</label>
