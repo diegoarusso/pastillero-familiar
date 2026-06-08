@@ -51,6 +51,57 @@
             return new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', hour12: false});
         }
 
+        // Suma/resta días a un string YYYY-MM-DD sin problemas de zona horaria
+        function shiftDateStr(dateStr, days) {
+            const [y, m, d] = dateStr.split('-').map(Number);
+            const dt = new Date(y, m - 1, d);
+            dt.setDate(dt.getDate() + days);
+            const yy = dt.getFullYear();
+            const mm = String(dt.getMonth() + 1).padStart(2, '0');
+            const dd = String(dt.getDate()).padStart(2, '0');
+            return `${yy}-${mm}-${dd}`;
+        }
+
+        // Etiqueta amigable: Hoy / Ayer / "lun 5 jun"
+        function formatDayLabel(dateStr) {
+            const today = getLocalToday();
+            if (dateStr === today) return 'Hoy';
+            if (dateStr === shiftDateStr(today, -1)) return 'Ayer';
+            if (dateStr === shiftDateStr(today, 1)) return 'Mañana';
+            const [y, m, d] = dateStr.split('-').map(Number);
+            return new Date(y, m - 1, d).toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' });
+        }
+
+        // Medicamentos ocasionales más frecuentes (toda la familia) + semilla por defecto
+        function getFrequentMeds() {
+            const counts = {};
+            store.logs.filter(l => l.med_id === null && l.name).forEach(l => {
+                const key = `${l.name}||${l.dose || ''}`;
+                counts[key] = (counts[key] || 0) + 1;
+            });
+            let list = Object.entries(counts)
+                .sort((a, b) => b[1] - a[1])
+                .map(([key]) => { const [name, dose] = key.split('||'); return { name, dose }; });
+            // Semilla para cuando hay poco historial
+            const seed = [
+                { name: 'Ibuprofeno', dose: '400mg' },
+                { name: 'Paracetamol', dose: '500mg' },
+                { name: 'Paracetamol', dose: '1g' }
+            ];
+            seed.forEach(s => {
+                if (!list.some(x => x.name === s.name && (x.dose || '') === s.dose)) list.push(s);
+            });
+            return list.slice(0, 6);
+        }
+
+        // Nivel/color de temperatura
+        function tempLevel(t) {
+            const v = parseFloat(t);
+            if (v >= 38.5) return { label: 'Fiebre alta', text: 'text-red-600', bg: 'bg-red-50', border: 'border-red-200', dot: 'bg-red-500' };
+            if (v >= 37.5) return { label: 'Febrícula', text: 'text-orange-600', bg: 'bg-orange-50', border: 'border-orange-200', dot: 'bg-orange-400' };
+            return { label: 'Normal', text: 'text-green-600', bg: 'bg-green-50', border: 'border-green-200', dot: 'bg-green-500' };
+        }
+
         const I = {
             Pill: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m10.5 20.5 10-10a4.95 4.95 0 1 0-7-7l-10 10a4.95 4.95 0 1 0 7 7Z"/><path d="m8.5 8.5 7 7"/></svg>',
             Clock: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
@@ -65,7 +116,10 @@
             Alert: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
             Bell: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>',
             Calendar: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>',
-            Zap: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>'
+            Zap: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
+            Thermometer: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4v10.54a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z"/></svg>',
+            ChevronLeft: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>',
+            ChevronRight: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>'
         };
 
         const store = {
@@ -76,11 +130,13 @@
             ],
             currentProfile: 1,
             view: 'home',
+            selectedDate: getLocalToday(),
             modal: false,
             modalType: 'regular',
             editId: null,
             meds: [],
             logs: [],
+            temps: [],
             // Formulario ahora soporta array de horas
             form: { 
                 name: '', dose: '', times: ['08:00'], trackStock: false, stock: '', minStock: '5',
@@ -98,8 +154,10 @@
             try {
                 const { data: dbMeds } = await _db.from('medications').select('*');
                 const { data: dbLogs } = await _db.from('logs').select('*');
+                const { data: dbTemps } = await _db.from('temperatures').select('*');
                 store.meds = dbMeds || [];
                 store.logs = dbLogs || [];
+                store.temps = dbTemps || [];
                 render();
                 const loader = document.getElementById('loader');
                 loader.style.opacity = '0';
@@ -107,20 +165,22 @@
             } catch(e) { console.error(e); alert("Error de conexión"); }
         }
 
-        function isScheduledForToday(med) {
-            if (med.track_stock && (med.stock === null || med.stock <= 0)) return false;
-            const today = new Date();
-            const todayStr = getLocalToday();
+        function isScheduledForDate(med, dateStr) {
+            // El filtro de stock agotado solo aplica al día de hoy: en días pasados
+            // queremos poder registrar una toma olvidada aunque hoy esté sin stock.
+            if (dateStr === getLocalToday() && med.track_stock && (med.stock === null || med.stock <= 0)) return false;
+            const [y, m, d] = dateStr.split('-').map(Number);
+            const target = new Date(y, m - 1, d);
             if (!med.frequency_type || med.frequency_type === 'daily') return true;
             if (med.frequency_type === 'specific_days') {
                 if (!med.frequency_days) return false;
-                const dayOfWeek = today.getDay();
+                const dayOfWeek = target.getDay();
                 return med.frequency_days.includes(dayOfWeek.toString());
             }
             if (med.frequency_type === 'interval') {
                 if (!med.start_date || !med.interval_days) return false;
                 const start = new Date(med.start_date);
-                const current = new Date(todayStr);
+                const current = new Date(dateStr);
                 const diffTime = current - start;
                 const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
                 if (diffDays < 0) return false;
@@ -132,14 +192,38 @@
         const Actions = {
             setProfile: (id) => { store.currentProfile = id; render(); },
             setView: (v) => { store.view = v; render(); },
+
+            // Navegación de fecha en la agenda (registro retroactivo)
+            shiftDate: (days) => {
+                const next = shiftDateStr(store.selectedDate, days);
+                // No permitimos navegar al futuro
+                if (next > getLocalToday()) return;
+                store.selectedDate = next;
+                render();
+            },
+            goToday: () => { store.selectedDate = getLocalToday(); render(); },
+
+            // Autocompletar nombre+dosis desde un chip de sugerencia
+            applySuggestion: (name, dose) => {
+                store.form.name = name;
+                store.form.dose = dose;
+                render();
+            },
+            // Autocompletar el antipirético en el modal de fiebre
+            applyFeverMed: (name, dose) => {
+                store.form.medName = name;
+                store.form.medDose = dose;
+                render();
+            },
             
             // AHORA RECIBE HORA ESPECIFICA PARA NO CONFUNDIR TOMAS
             toggleTaken: async (medId, specificTime) => {
                 setBusy(true);
                 const med = store.meds.find(m => m.id === medId);
-                const today = getLocalToday();
-                const nowTime = getLocalTime();
-                
+                const today = store.selectedDate;
+                // Si registramos en un día pasado, la "hora real" es la programada (no la actual)
+                const nowTime = (store.selectedDate === getLocalToday()) ? getLocalTime() : specificTime;
+
                 // Buscamos log exacto por ID, Fecha Y HORA específica
                 const existingLog = store.logs.find(l => l.med_id === medId && l.date === today && l.time === specificTime);
 
@@ -242,8 +326,8 @@
             saveOccasional: async () => {
                 if(!store.form.name) return;
                 setBusy(true);
-                const today = getLocalToday();
-                const time = store.form.time; 
+                const today = store.selectedDate;
+                const time = store.form.time;
                 
                 const logData = {
                     profile_id: store.currentProfile,
@@ -261,6 +345,56 @@
                     store.logs.push(data[0]);
                     store.modal = false;
                 } catch(e) { console.error(e); alert("Error guardando"); } finally { setBusy(false); render(); }
+            },
+
+            saveTemperature: async () => {
+                const tempVal = parseFloat(store.form.temp);
+                if (!store.form.temp || isNaN(tempVal)) { alert("Ingresá una temperatura válida"); return; }
+                setBusy(true);
+                const date = store.selectedDate;
+                const time = store.form.time;
+                try {
+                    let medLogId = null;
+                    // Si se indicó un antipirético, registrarlo como toma ocasional vinculada
+                    if (store.form.medName) {
+                        const logData = {
+                            profile_id: store.currentProfile,
+                            name: store.form.medName,
+                            dose: store.form.medDose || '',
+                            date: date, time: time, taken_at: time, med_id: null
+                        };
+                        const { data: logIns, error: logErr } = await _db.from('logs').insert(logData).select();
+                        if (logErr) throw logErr;
+                        store.logs.push(logIns[0]);
+                        medLogId = logIns[0].id;
+                    }
+                    const tempData = {
+                        profile_id: store.currentProfile,
+                        date: date, time: time,
+                        temp: tempVal,
+                        note: store.form.note || null,
+                        med_log_id: medLogId
+                    };
+                    const { data, error } = await _db.from('temperatures').insert(tempData).select();
+                    if (error) throw error;
+                    store.temps.push(data[0]);
+                    store.modal = false;
+                } catch(e) { console.error(e); alert("Error guardando temperatura"); } finally { setBusy(false); render(); }
+            },
+
+            deleteTemp: async (id) => {
+                if(!confirm('¿Eliminar este registro de temperatura?')) return;
+                setBusy(true);
+                const t = store.temps.find(x => x.id === id);
+                try {
+                    await _db.from('temperatures').delete().eq('id', id);
+                    store.temps = store.temps.filter(x => x.id !== id);
+                    // Borrar también el log del antipirético vinculado, si existe
+                    if (t && t.med_log_id) {
+                        await _db.from('logs').delete().eq('id', t.med_log_id);
+                        store.logs = store.logs.filter(l => l.id !== t.med_log_id);
+                    }
+                } catch(e) { console.error(e); alert("Error borrando temperatura"); } finally { setBusy(false); render(); }
             },
 
             deleteMed: async () => {
@@ -310,8 +444,11 @@
                     } else {
                         store.form = { name: '', dose: '', times: ['08:00'], stock: '', minStock: '5', trackStock: false, frequencyType: 'daily', frequencyDays: [], intervalDays: 14, startDate: todayStr };
                     }
-                } else {
+                } else if (type === 'occasional') {
                     store.form = { name: '', dose: '', time: timeStr };
+                } else {
+                    // fiebre
+                    store.form = { temp: '', time: timeStr, note: '', medName: '', medDose: '' };
                 }
                 store.modal = true;
                 render();
@@ -356,6 +493,8 @@
             const p = store.profiles.find(x => x.id === store.currentProfile);
             const meds = store.meds.filter(m => m.profile_id === store.currentProfile);
             const today = getLocalToday();
+            const selDate = store.selectedDate;
+            const isToday = selDate === today;
 
             document.getElementById('header-container').innerHTML = `
                 <div class="bg-white border-b border-gray-100 shadow-sm pt-safe">
@@ -374,9 +513,9 @@
             let content = '';
 
             if (store.view === 'home') {
-                // 1. Filtrar meds por día
-                const scheduledMeds = meds.filter(m => isScheduledForToday(m));
-                
+                // 1. Filtrar meds por el día seleccionado
+                const scheduledMeds = meds.filter(m => isScheduledForDate(m, selDate));
+
                 // 2. Expandir Multi-Horarios ("08:00,20:00" -> 2 items en la lista)
                 let flatList = [];
                 scheduledMeds.forEach(m => {
@@ -385,7 +524,7 @@
                         flatList.push({
                             ...m,
                             displayTime: t, // Hora específica de esta tarjeta
-                            isTaken: store.logs.some(l => l.med_id === m.id && l.date === today && l.time === t)
+                            isTaken: store.logs.some(l => l.med_id === m.id && l.date === selDate && l.time === t)
                         });
                     });
                 });
@@ -396,24 +535,57 @@
                 const progress = flatList.length ? Math.round((flatList.filter(x => x.isTaken).length / flatList.length) * 100) : 0;
                 const alerts = meds.filter(m => m.track_stock && (parseInt(m.stock) <= parseInt(m.min_stock)));
 
+                // Lecturas de temperatura del perfil para el día seleccionado
+                const dayTemps = store.temps
+                    .filter(t => t.profile_id === store.currentProfile && t.date === selDate)
+                    .sort((a, b) => a.time.localeCompare(b.time));
+                const lastTemp = dayTemps[dayTemps.length - 1];
+                const lastLvl = lastTemp ? tempLevel(lastTemp.temp) : null;
+
                 content = `
+                    <div class="flex items-center justify-between gap-2 mb-4 bg-white rounded-2xl p-1.5 shadow-sm border ${isToday ? 'border-gray-100' : 'border-amber-300'}">
+                        <button onclick="Actions.shiftDate(-1)" class="p-2 rounded-xl text-gray-500 active:bg-gray-100 transition-colors">${I.ChevronLeft}</button>
+                        <button onclick="Actions.goToday()" class="flex-1 text-center ${isToday ? 'cursor-default' : 'cursor-pointer'}">
+                            <p class="font-bold text-sm capitalize ${isToday ? 'text-gray-700' : 'text-amber-600'}">${formatDayLabel(selDate)}</p>
+                            ${!isToday ? `<p class="text-[10px] text-amber-500 font-bold uppercase tracking-wide">Tocá para volver a hoy</p>` : ''}
+                        </button>
+                        <button onclick="Actions.shiftDate(1)" class="p-2 rounded-xl transition-colors ${isToday ? 'text-gray-200 cursor-not-allowed' : 'text-gray-500 active:bg-gray-100'}" ${isToday ? 'disabled' : ''}>${I.ChevronRight}</button>
+                    </div>
+
                     <div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 mb-5">
                         <div class="flex justify-between items-end mb-3">
-                            <div><p class="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Hoy</p><h2 class="text-3xl font-bold text-gray-800">${progress}%</h2></div>
+                            <div><p class="text-[10px] font-bold text-gray-400 uppercase tracking-wider capitalize">${formatDayLabel(selDate)}</p><h2 class="text-3xl font-bold text-gray-800">${progress}%</h2></div>
                             <div class="text-xs font-bold bg-gray-50 px-3 py-1.5 rounded-lg text-gray-600 border border-gray-100">${flatList.filter(x => x.isTaken).length}/${flatList.length} Dosis</div>
                         </div>
                         <div class="h-3 bg-gray-100 rounded-full overflow-hidden"><div class="h-full transition-all duration-500 ${p.color}" style="width: ${progress}%"></div></div>
                     </div>
                     ${alerts.length ? `<div class="bg-orange-50 border-l-4 border-orange-400 p-3 rounded-r-xl flex gap-3 mb-4 shadow-sm animate-fade-in"><span class="text-orange-500 mt-0.5">${I.Alert}</span><div><p class="font-bold text-sm text-orange-800">Reponer Stock</p>${alerts.map(a => `<p class="text-xs text-orange-700 mt-0.5">• ${a.name}: Quedan ${a.stock}</p>`).join('')}</div></div>` : ''}
-                    
-                    <div class="flex gap-2 mb-4">
-                        <button onclick="Actions.openModal('regular')" class="flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold shadow-md active:scale-95 transition-all flex items-center justify-center gap-2 text-sm">${I.Plus} Agendar</button>
-                        <button onclick="Actions.openModal('occasional')" class="flex-1 py-3 bg-purple-100 text-purple-700 rounded-xl font-bold shadow-sm active:scale-95 transition-all flex items-center justify-center gap-2 text-sm">${I.Plus} Ocasional</button>
+
+                    ${dayTemps.length ? `<div class="${lastLvl.bg} border ${lastLvl.border} rounded-2xl p-4 mb-5 shadow-sm">
+                        <div class="flex items-center justify-between mb-3">
+                            <div class="flex items-center gap-3">
+                                <span class="${lastLvl.text}">${I.Thermometer}</span>
+                                <div>
+                                    <p class="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Última temperatura</p>
+                                    <p class="text-2xl font-bold ${lastLvl.text} leading-none">${parseFloat(lastTemp.temp).toFixed(1)}°<span class="text-xs font-bold ml-2 align-middle">${lastLvl.label}</span></p>
+                                </div>
+                            </div>
+                            <span class="text-xs font-bold text-gray-500 bg-white/70 px-2 py-1 rounded-lg">${lastTemp.time}</span>
+                        </div>
+                        <div class="flex flex-wrap gap-1.5">
+                            ${dayTemps.map(t => { const lv = tempLevel(t.temp); return `<span class="text-xs font-bold ${lv.text} bg-white/80 border ${lv.border} px-2 py-1 rounded-lg flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full ${lv.dot}"></span>${t.time} · ${parseFloat(t.temp).toFixed(1)}°</span>`; }).join('')}
+                        </div>
+                    </div>` : ''}
+
+                    <div class="grid grid-cols-3 gap-2 mb-4">
+                        <button onclick="Actions.openModal('regular')" class="py-3 bg-blue-600 text-white rounded-xl font-bold shadow-md active:scale-95 transition-all flex flex-col items-center justify-center gap-1 text-xs">${I.Plus} Agendar</button>
+                        <button onclick="Actions.openModal('occasional')" class="py-3 bg-purple-100 text-purple-700 rounded-xl font-bold shadow-sm active:scale-95 transition-all flex flex-col items-center justify-center gap-1 text-xs">${I.Plus} Ocasional</button>
+                        <button onclick="Actions.openModal('fever')" class="py-3 bg-red-100 text-red-600 rounded-xl font-bold shadow-sm active:scale-95 transition-all flex flex-col items-center justify-center gap-1 text-xs">${I.Thermometer} Fiebre</button>
                     </div>
 
                     <h3 class="font-bold text-gray-700 text-lg mb-3 px-1">Agenda</h3>
                     <div class="space-y-3">
-                        ${flatList.length === 0 ? `<div class="text-center py-12 opacity-40"><div class="w-16 h-16 bg-gray-200 rounded-full mx-auto mb-3 flex items-center justify-center text-gray-400">${I.Pill}</div><p>Nada programado para hoy</p></div>` : flatList.map(m => `
+                        ${flatList.length === 0 ? `<div class="text-center py-12 opacity-40"><div class="w-16 h-16 bg-gray-200 rounded-full mx-auto mb-3 flex items-center justify-center text-gray-400">${I.Pill}</div><p>Nada programado para ${formatDayLabel(selDate).toLowerCase()}</p></div>` : flatList.map(m => `
                             <div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex flex-col gap-3 transition-all ${m.isTaken ? 'opacity-60 bg-gray-50/50' : ''}">
                                 <div class="flex items-center justify-between">
                                     <div class="flex items-center gap-4 flex-1 cursor-pointer" onclick="Actions.openModal('regular', ${m.id})">
@@ -431,16 +603,35 @@
                     </div>`;
 
             } else if (store.view === 'history') {
-                const history = store.logs.filter(l => l.profile_id === store.currentProfile).sort((a, b) => new Date(b.date + 'T' + b.time) - new Date(a.date + 'T' + a.time));
-                const grouped = {}; history.forEach(l => { if (!grouped[l.date]) grouped[l.date] = []; grouped[l.date].push(l); });
+                // Unificamos tomas (logs) y mediciones de temperatura en una sola línea de tiempo
+                const logItems = store.logs.filter(l => l.profile_id === store.currentProfile).map(l => ({ kind: 'log', date: l.date, time: l.taken_at || l.time, data: l }));
+                const tempItems = store.temps.filter(t => t.profile_id === store.currentProfile).map(t => ({ kind: 'temp', date: t.date, time: t.time, data: t }));
+                const items = [...logItems, ...tempItems];
+                const grouped = {}; items.forEach(it => { if (!grouped[it.date]) grouped[it.date] = []; grouped[it.date].push(it); });
                 content = `<h2 class="font-bold text-xl text-gray-800 mb-4 px-1">Historial</h2>`;
-                if (history.length === 0) content += `<div class="text-center py-12 opacity-40"><p>No hay registros</p></div>`;
+                if (items.length === 0) content += `<div class="text-center py-12 opacity-40"><p>No hay registros</p></div>`;
                 else {
                     content += `<div class="space-y-6">`;
                     Object.keys(grouped).sort().reverse().forEach(date => {
                         const dateStr = new Date(date + 'T00:00:00').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
-                        content += `<div><h3 class="text-xs font-bold uppercase text-gray-400 mb-3 ml-1 sticky top-0 bg-gray-50 py-2 backdrop-blur-sm bg-opacity-90">${date === today ? 'Hoy' : dateStr}</h3><div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">${grouped[date].map((log, idx) => `
-                            <div class="p-4 flex justify-between items-center ${idx !== grouped[date].length - 1 ? 'border-b border-gray-50' : ''}">
+                        const rows = grouped[date].sort((a, b) => (b.time || '').localeCompare(a.time || ''));
+                        content += `<div><h3 class="text-xs font-bold uppercase text-gray-400 mb-3 ml-1 sticky top-0 bg-gray-50 py-2 backdrop-blur-sm bg-opacity-90">${date === today ? 'Hoy' : dateStr}</h3><div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">${rows.map((it, idx) => {
+                            const border = idx !== rows.length - 1 ? 'border-b border-gray-50' : '';
+                            if (it.kind === 'temp') {
+                                const t = it.data; const lv = tempLevel(t.temp);
+                                return `<div class="p-4 flex justify-between items-center ${border}">
+                                    <div class="flex items-center gap-3">
+                                        <div class="${lv.bg} ${lv.text} p-1.5 rounded-lg scale-90">${I.Thermometer}</div>
+                                        <div><p class="font-bold text-gray-800">${parseFloat(t.temp).toFixed(1)}° <span class="text-xs font-bold ${lv.text}">${lv.label}</span></p><p class="text-xs text-gray-500">${t.note ? t.note : 'Temperatura'}</p></div>
+                                    </div>
+                                    <div class="flex items-center gap-3">
+                                        <div class="text-right"><p class="font-bold text-gray-600 text-sm">${t.time}</p></div>
+                                        <button onclick="Actions.deleteTemp(${t.id})" class="text-gray-300 hover:text-red-500 p-2">${I.Trash}</button>
+                                    </div>
+                                </div>`;
+                            }
+                            const log = it.data;
+                            return `<div class="p-4 flex justify-between items-center ${border}">
                                 <div class="flex items-center gap-3">
                                     <div class="${log.med_id ? 'bg-green-50 text-green-600' : 'bg-purple-50 text-purple-600'} p-1.5 rounded-lg scale-90">${log.med_id ? I.Check : I.Zap}</div>
                                     <div><p class="font-bold text-gray-800">${log.name}</p><p class="text-xs text-gray-500">${log.dose}</p></div>
@@ -449,8 +640,8 @@
                                     <div class="text-right"><p class="font-bold text-gray-600 text-sm">${log.taken_at || log.time}</p><p class="text-[10px] text-gray-400">${log.med_id ? 'Prog: '+log.time : 'Ocasional'}</p></div>
                                     <button onclick="Actions.deleteLog(${log.id})" class="text-gray-300 hover:text-red-500 p-2">${I.Trash}</button>
                                 </div>
-                            </div>
-                        `).join('')}</div></div>`;
+                            </div>`;
+                        }).join('')}</div></div>`;
                     });
                     content += `</div>`;
                 }
@@ -469,7 +660,11 @@
 
             if (store.modal) {
                 let modalContent = '';
-                
+
+                // Fila de chips de medicamentos frecuentes (reutilizada en Ocasional y Fiebre)
+                const freqMeds = getFrequentMeds();
+                const chipRow = (fn) => `<div class="flex gap-2 overflow-x-auto no-scrollbar -mx-1 px-1 pb-1">${freqMeds.map(s => { const n = s.name.replace(/'/g, "\\'"); const d = (s.dose || '').replace(/'/g, "\\'"); return `<button onclick="Actions.${fn}('${n}', '${d}')" class="shrink-0 text-xs font-bold bg-gray-100 text-gray-700 px-3 py-2 rounded-xl active:bg-gray-200 transition-colors">${s.name}${s.dose ? ` <span class="text-gray-400">${s.dose}</span>` : ''}</button>`; }).join('')}</div>`;
+
                 if (store.modalType === 'regular') {
                     // FORMULARIO REGULAR MULTI-HORA
                     modalContent = `
@@ -508,10 +703,11 @@
                             ${store.editId ? `<button onclick="Actions.deleteMed()" class="w-full py-3 text-red-500 font-bold text-sm active:bg-red-50 rounded-xl transition-all flex items-center justify-center gap-2">${I.Trash} Eliminar Medicamento</button>` : ''}
                         </div>
                     `;
-                } else {
+                } else if (store.modalType === 'occasional') {
                     modalContent = `
                         <div class="space-y-5">
                             <div class="bg-purple-50 p-3 rounded-xl text-purple-800 text-sm font-medium text-center mb-2">⚡ Registro Rápido (Ocasional)</div>
+                            <div><label class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5 block">Sugerencias</label>${chipRow('applySuggestion')}</div>
                             <div><label class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5 block">Qué tomaste</label><input type="text" value="${store.form.name}" oninput="Actions.updateForm('name', this.value)" class="w-full p-4 bg-gray-50 rounded-xl font-bold text-lg border border-gray-200 outline-none focus:ring-2 focus:ring-purple-500 transition-all" placeholder="Ej: Paracetamol"></div>
                             <div class="flex gap-4">
                                 <div class="flex-1"><label class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5 block">Dosis</label><input type="text" value="${store.form.dose}" oninput="Actions.updateForm('dose', this.value)" class="w-full p-4 bg-gray-50 rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-purple-500" placeholder="500mg"></div>
@@ -520,12 +716,41 @@
                             <button onclick="Actions.saveOccasional()" class="w-full py-4 bg-purple-600 text-white rounded-xl font-bold text-lg shadow-lg shadow-purple-200 active:bg-purple-700 active:scale-[0.98] transition-all mt-4">Registrar Toma</button>
                         </div>
                     `;
+                } else {
+                    // MODAL DE FIEBRE
+                    const commonTemps = ['37', '37.5', '38', '38.5', '39', '39.5'];
+                    const curTemp = store.form.temp || '';
+                    modalContent = `
+                        <div class="space-y-5">
+                            <div class="bg-red-50 p-3 rounded-xl text-red-700 text-sm font-medium text-center mb-2 flex items-center justify-center gap-2">${I.Thermometer} Registro de Temperatura</div>
+                            <div>
+                                <label class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5 block">Temperatura (°C)</label>
+                                <input type="number" inputmode="decimal" step="0.1" value="${curTemp}" oninput="Actions.updateForm('temp', this.value)" class="w-full p-4 bg-gray-50 rounded-xl font-bold text-2xl text-center border border-gray-200 outline-none focus:ring-2 focus:ring-red-500 transition-all" placeholder="38.0">
+                                <div class="flex gap-2 mt-2 overflow-x-auto no-scrollbar -mx-1 px-1">
+                                    ${commonTemps.map(t => `<button onclick="Actions.updateForm('temp', '${t}'); render()" class="shrink-0 text-sm font-bold px-3 py-1.5 rounded-lg transition-colors ${curTemp === t ? 'bg-red-500 text-white' : 'bg-gray-100 text-gray-600 active:bg-gray-200'}">${t}°</button>`).join('')}
+                                </div>
+                            </div>
+                            <div class="flex gap-4">
+                                <div class="flex-1"><label class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5 block">Hora</label><input type="time" value="${store.form.time}" oninput="Actions.updateForm('time', this.value)" class="w-full p-4 bg-gray-50 rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-red-500"></div>
+                                <div class="flex-1"><label class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5 block">Nota</label><input type="text" value="${store.form.note || ''}" oninput="Actions.updateForm('note', this.value)" class="w-full p-4 bg-gray-50 rounded-xl border border-gray-200 outline-none focus:ring-2 focus:ring-red-500" placeholder="Opcional"></div>
+                            </div>
+                            <div class="bg-blue-50 p-4 rounded-2xl border border-blue-100">
+                                <label class="text-xs font-bold text-blue-700 uppercase tracking-wider mb-2 block">¿Le diste algo? (opcional)</label>
+                                ${chipRow('applyFeverMed')}
+                                <div class="flex gap-3 mt-3">
+                                    <div class="flex-1"><input type="text" value="${store.form.medName || ''}" oninput="Actions.updateForm('medName', this.value)" class="w-full p-3 bg-white border border-blue-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500" placeholder="Medicamento"></div>
+                                    <div class="w-28"><input type="text" value="${store.form.medDose || ''}" oninput="Actions.updateForm('medDose', this.value)" class="w-full p-3 bg-white border border-blue-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500" placeholder="Dosis"></div>
+                                </div>
+                            </div>
+                            <button onclick="Actions.saveTemperature()" class="w-full py-4 bg-red-600 text-white rounded-xl font-bold text-lg shadow-lg shadow-red-200 active:bg-red-700 active:scale-[0.98] transition-all mt-2">Registrar Temperatura</button>
+                        </div>
+                    `;
                 }
 
                 document.getElementById('modal-container').innerHTML = `
                     <div class="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-4 animate-fade-in backdrop-blur-sm">
                         <div class="bg-white w-full max-w-sm rounded-3xl p-6 shadow-2xl animate-slide-up max-h-[85vh] overflow-y-auto">
-                            <div class="flex justify-between items-center mb-6"><h3 class="font-bold text-xl text-gray-800">${store.modalType === 'regular' ? (store.editId ? 'Editar' : 'Nuevo') : 'Ocasional'}</h3><button onclick="Actions.closeModal()" class="bg-gray-100 p-2 rounded-full active:bg-gray-200 text-gray-600">${I.X}</button></div>
+                            <div class="flex justify-between items-center mb-6"><h3 class="font-bold text-xl text-gray-800">${store.modalType === 'regular' ? (store.editId ? 'Editar' : 'Nuevo') : (store.modalType === 'fever' ? 'Fiebre' : 'Ocasional')}</h3><button onclick="Actions.closeModal()" class="bg-gray-100 p-2 rounded-full active:bg-gray-200 text-gray-600">${I.X}</button></div>
                             ${modalContent}
                         </div>
                     </div>`;
