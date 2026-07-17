@@ -242,6 +242,7 @@
                 const remainingMs = nextDose - now;
                 windows.push({
                     key: fam.key, label: fam.label, hours: fam.hours,
+                    lastMs: last.when.getTime(),
                     lastHM: formatHM(last.when), lastName: last.log.name, lastDose: last.log.dose || '',
                     nextHM: formatHM(nextDose), remainingMs, ready: remainingMs <= 0,
                     progress: Math.max(0, Math.min(100, Math.round((1 - remainingMs / (fam.hours * 3600000)) * 100)))
@@ -249,6 +250,27 @@
             });
             windows.sort((a, b) => a.remainingMs - b.remainingMs);
             return windows;
+        }
+
+        // Alternancia: Novalgina (dipirona) como intermedia del Ibuprofeno, a mitad de ventana (3–3:30 h)
+        const ALTERNATION = { anchorKey: 'ibuprofeno', interKey: 'dipirona', interLabel: 'Novalgina', minHours: 3, maxHours: 3.5 };
+        function computeAlternation(windows) {
+            if (!windows.length) return null;
+            // La toma más reciente entre todas las familias debe ser el ancla (ibuprofeno)
+            const mostRecent = windows.reduce((a, b) => (b.lastMs > a.lastMs ? b : a));
+            if (mostRecent.key !== ALTERNATION.anchorKey || mostRecent.ready) return null;
+            // Si la intermedia (novalgina) tiene ventana propia pendiente (se dio hace <6 h), no sugerirla
+            const inter = windows.find(w => w.key === ALTERNATION.interKey);
+            if (inter && !inter.ready) return null;
+            const fromMs = mostRecent.lastMs + ALTERNATION.minHours * 3600000;
+            const toMs = mostRecent.lastMs + ALTERNATION.maxHours * 3600000;
+            const now = Date.now();
+            return {
+                fromHM: formatHM(new Date(fromMs)),
+                toHM: formatHM(new Date(toMs)),
+                state: now < fromMs ? 'soon' : 'open',
+                opensInMs: fromMs - now
+            };
         }
 
         // Reloj en vivo: re-renderiza la cuenta regresiva desde el reloj real, y al despertar la pantalla.
@@ -377,6 +399,12 @@
             applyFeverMed: (name, dose) => {
                 store.form.medName = name;
                 store.form.medDose = dose;
+                render();
+            },
+            // Abrir el modal "Ocasional" con el nombre precargado (el usuario confirma dosis y hora)
+            openOccasionalPrefill: (name) => {
+                Actions.openModal('occasional');
+                store.form.name = name;
                 render();
             },
             
@@ -743,6 +771,7 @@
 
                 // Ventanas de antipiréticos (solo sobre "ahora", cuando estamos viendo hoy)
                 const doseWindows = isToday ? getAntipyreticWindows(store.currentProfile) : [];
+                const altHint = isToday ? computeAlternation(doseWindows) : null;
 
                 // Lecturas de temperatura del perfil para el día seleccionado
                 const dayTemps = store.temps
@@ -802,8 +831,21 @@
                                 </div>
                                 <div class="h-2 bg-[#FAEEDA] rounded-full overflow-hidden mt-3"><div class="h-full bg-[#EF9F27] rounded-full transition-all duration-500" style="width: ${w.progress}%"></div></div>
                                 <p class="text-xs text-muted font-medium mt-2">Última ${w.lastHM} · cada ${w.hours} h · desde las ${w.nextHM}</p>
+                                ${(w.key === 'ibuprofeno' && altHint) ? `
+                                    <div class="mt-3 pt-3 border-t border-hairline">
+                                        <div class="flex items-start gap-2">
+                                            <span class="text-[#534AB7] mt-0.5">${I.Zap}</span>
+                                            <div class="flex-1 min-w-0">
+                                                <p class="text-xs font-bold text-[#534AB7]">Alternancia · si la fiebre no cede</p>
+                                                <p class="text-xs text-muted font-medium mt-0.5">${altHint.state === 'open'
+                                                    ? `Ya se puede dar <span class="font-bold text-ink">Novalgina</span> (franja ${altHint.fromHM}–${altHint.toHM})`
+                                                    : `<span class="font-bold text-ink">Novalgina</span> como intermedia: ${altHint.fromHM}–${altHint.toHM} <span class="text-muted/70">(en ${formatRemaining(altHint.opensInMs)})</span>`}</p>
+                                                ${altHint.state === 'open' ? `<button onclick="Actions.openOccasionalPrefill('Novalgina')" class="text-xs font-bold text-[#534AB7] mt-1.5 active:opacity-70">Registrar Novalgina →</button>` : ''}
+                                            </div>
+                                        </div>
+                                    </div>` : ''}
                             </div>`).join('')}
-                        <p class="text-[11px] text-muted/70 px-1 leading-snug">Recordatorio orientativo según la ventana de cada antipirético. Ante dudas, seguí la indicación del pediatra.</p>
+                        <p class="text-[11px] text-muted/70 px-1 leading-snug">Recordatorio orientativo (incluida la alternancia). Ante dudas, seguí la indicación del pediatra.</p>
                     </div>` : ''}
 
                     ${alerts.length ? `<div class="bg-[#FAEEDA] border border-[#EF9F27]/40 p-3.5 rounded-2xl flex gap-3 mb-4 animate-fade-in"><span class="text-[#BA7517] mt-0.5">${I.Alert}</span><div><p class="font-bold text-sm text-[#854F0B]">Reponer stock</p>${alerts.map(a => `<p class="text-xs text-[#854F0B]/80 mt-0.5 font-medium">• ${a.name}: quedan ${a.stock}</p>`).join('')}</div></div>` : ''}
