@@ -259,17 +259,17 @@
             // La toma más reciente entre todas las familias debe ser el ancla (ibuprofeno)
             const mostRecent = windows.reduce((a, b) => (b.lastMs > a.lastMs ? b : a));
             if (mostRecent.key !== ALTERNATION.anchorKey || mostRecent.ready) return null;
-            // Si la intermedia (novalgina) tiene ventana propia pendiente (se dio hace <6 h), no sugerirla
             const inter = windows.find(w => w.key === ALTERNATION.interKey);
-            if (inter && !inter.ready) return null;
-            const fromMs = mostRecent.lastMs + ALTERNATION.minHours * 3600000;
-            const toMs = mostRecent.lastMs + ALTERNATION.maxHours * 3600000;
+            // Dos pisos para la intermedia: mitad de la ventana del ibuprofeno Y su propia ventana de 6 h
+            const dipOwnNextMs = inter ? (inter.lastMs + inter.hours * 3600000) : 0;
+            const startMs = Math.max(mostRecent.lastMs + ALTERNATION.minHours * 3600000, dipOwnNextMs);
+            const endMs = startMs + (ALTERNATION.maxHours - ALTERNATION.minHours) * 3600000; // franja de 30 min, nunca colapsa
             const now = Date.now();
             return {
-                fromHM: formatHM(new Date(fromMs)),
-                toHM: formatHM(new Date(toMs)),
-                state: now < fromMs ? 'soon' : 'open',
-                opensInMs: fromMs - now
+                fromHM: formatHM(new Date(startMs)),
+                toHM: formatHM(new Date(endMs)),
+                state: now < startMs ? 'soon' : 'open',
+                opensInMs: startMs - now
             };
         }
 
@@ -772,6 +772,8 @@
                 // Ventanas de antipiréticos (solo sobre "ahora", cuando estamos viendo hoy)
                 const doseWindows = isToday ? getAntipyreticWindows(store.currentProfile) : [];
                 const altHint = isToday ? computeAlternation(doseWindows) : null;
+                // Con alternancia activa, la Dipirona se guía SOLO por la alternancia (evita tarjeta "habilitada" contradictoria)
+                const visibleWindows = altHint ? doseWindows.filter(w => w.key !== ALTERNATION.interKey) : doseWindows;
 
                 // Lecturas de temperatura del perfil para el día seleccionado
                 const dayTemps = store.temps
@@ -808,8 +810,8 @@
                         </div>
                     </div>
 
-                    ${doseWindows.length ? `<div class="space-y-2.5 mb-4">
-                        ${doseWindows.map(w => w.ready ? `
+                    ${visibleWindows.length ? `<div class="space-y-2.5 mb-4">
+                        ${visibleWindows.map(w => w.ready ? `
                             <div class="bg-[#E1F5EE] border border-[#9FE1CB]/70 rounded-2xl p-4 animate-fade-in">
                                 <div class="flex items-center gap-3">
                                     <div class="w-11 h-11 rounded-2xl bg-[#0F6E56] text-white flex items-center justify-center shrink-0">${I.Check}</div>
