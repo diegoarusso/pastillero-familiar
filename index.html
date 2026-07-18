@@ -125,12 +125,148 @@
             return list.slice(0, 6);
         }
 
-        // Nivel/color de temperatura
+        // Nivel/color de temperatura (3 niveles febriles + normal)
         function tempLevel(t) {
             const v = parseFloat(t);
-            if (v >= 38.5) return { label: 'Fiebre alta', text: 'text-red-600', bg: 'bg-red-50', border: 'border-red-200', dot: 'bg-red-500' };
-            if (v >= 37.5) return { label: 'Febrícula', text: 'text-orange-600', bg: 'bg-orange-50', border: 'border-orange-200', dot: 'bg-orange-400' };
-            return { label: 'Normal', text: 'text-green-600', bg: 'bg-green-50', border: 'border-green-200', dot: 'bg-green-500' };
+            if (v >= 38.5) return { label: 'Fiebre alta', text: 'text-[#A32D2D]', bg: 'bg-[#FCEBEB]', border: 'border-[#F09595]/60', dot: 'bg-[#E24B4A]', hex: '#A32D2D' };
+            if (v >= 37.9) return { label: 'Fiebre', text: 'text-[#D85A30]', bg: 'bg-[#FAECE7]', border: 'border-[#F0997B]/60', dot: 'bg-[#D85A30]', hex: '#D85A30' };
+            if (v >= 37.0) return { label: 'Febrícula', text: 'text-[#BA7517]', bg: 'bg-[#FAEEDA]', border: 'border-[#EF9F27]/60', dot: 'bg-[#EF9F27]', hex: '#BA7517' };
+            return { label: 'Normal', text: 'text-[#0F6E56]', bg: 'bg-[#E1F5EE]', border: 'border-[#9FE1CB]/60', dot: 'bg-[#0F6E56]', hex: '#0F6E56' };
+        }
+
+        // Tendencia de la fiebre: describe el dato (no diagnostica). points = [{ms, temp}] ascendente.
+        function feverTrend(points) {
+            if (!points || points.length < 3) return null;
+            const now = points[points.length - 1].ms;
+            let recent = points.filter(p => p.ms >= now - 8 * 3600000);
+            if (recent.length < 3) recent = points.slice(-5);
+            if (recent.length < 3) return null;
+            const t0 = recent[0].ms;
+            const xs = recent.map(p => (p.ms - t0) / 3600000);
+            const ys = recent.map(p => p.temp);
+            const n = xs.length;
+            const sx = xs.reduce((a, b) => a + b, 0), sy = ys.reduce((a, b) => a + b, 0);
+            const sxx = xs.reduce((a, b) => a + b * b, 0), sxy = xs.reduce((a, b, i) => a + b * ys[i], 0);
+            const denom = n * sxx - sx * sx;
+            if (denom === 0) return null;
+            const slope = (n * sxy - sx * sy) / denom; // °/h
+            if (slope < -0.12) return { text: 'la fiebre viene cediendo', dir: 'down' };
+            if (slope > 0.12) return { text: 'la temperatura viene en aumento', dir: 'up' };
+            return { text: 'se mantiene estable', dir: 'flat' };
+        }
+
+        // --- EPISODIOS FEBRILES (Modo Fiebre) ---
+        function activeEpisode(profileId) {
+            return store.episodes
+                .filter(e => e.profile_id === profileId && !e.ended_at)
+                .sort((a, b) => new Date(b.started_at) - new Date(a.started_at))[0] || null;
+        }
+        function episodeWindow(ep) {
+            return { startMs: new Date(ep.started_at).getTime(), endMs: ep.ended_at ? new Date(ep.ended_at).getTime() : Date.now() };
+        }
+        // Lecturas, tomas y marcas del episodio (perfil), ascendente por tiempo
+        function episodeData(ep, profileId) {
+            const { startMs, endMs } = episodeWindow(ep);
+            const inWin = ms => ms >= startMs - 60000 && ms <= endMs + 60000;
+            const readings = store.temps.filter(t => t.profile_id === profileId)
+                .map(t => ({ raw: t, ms: parseLocalDateTime(t.date, t.time).getTime(), temp: parseFloat(t.temp) }))
+                .filter(x => !isNaN(x.temp) && inWin(x.ms)).sort((a, b) => a.ms - b.ms);
+            const logs = store.logs.filter(l => l.profile_id === profileId)
+                .map(l => ({ raw: l, ms: parseLocalDateTime(l.date, l.taken_at || l.time).getTime(), fam: matchAntipyretic(l.name) }))
+                .filter(x => inWin(x.ms)).sort((a, b) => a.ms - b.ms);
+            const doseMarks = logs.filter(x => x.fam);
+            const stats = {
+                pico: readings.length ? Math.max(...readings.map(r => r.temp)) : null,
+                nLecturas: readings.length,
+                nTomas: doseMarks.length,
+                cadaHoras: null
+            };
+            if (doseMarks.length >= 2) {
+                let sum = 0;
+                for (let i = 1; i < doseMarks.length; i++) sum += (doseMarks[i].ms - doseMarks[i - 1].ms);
+                stats.cadaHoras = Math.round((sum / (doseMarks.length - 1)) / 3600000 * 10) / 10;
+            }
+            return { startMs, endMs, readings, logs, doseMarks, stats };
+        }
+
+        // Gráfico SVG de la curva febril del episodio (zonas de 3 niveles + marcas de dosis)
+        function feverChartSVG(ed) {
+            const pts = ed.readings;
+            if (pts.length < 2) return null;
+            const marks = ed.doseMarks;
+            const allMs = [...pts.map(p => p.ms), ...marks.map(m => m.ms)];
+            let xMin = Math.min(...allMs), xMax = Math.max(...allMs);
+            if (xMax - xMin < 3600000) xMax = xMin + 3600000;
+            const PX0 = 40, PX1 = 320, PY0 = 20, PY1 = 150, TMIN = 36, TMAX = 40.5;
+            const x = ms => PX0 + (ms - xMin) / (xMax - xMin) * (PX1 - PX0);
+            const y = t => PY0 + (TMAX - t) / (TMAX - TMIN) * (PY1 - PY0);
+            const dcolor = { ibuprofeno: '#0F6E56', dipirona: '#534AB7', paracetamol: '#BA7517' };
+            const dinit = { ibuprofeno: 'I', dipirona: 'N', paracetamol: 'P' };
+            let svg = `<svg viewBox="0 0 340 172" width="100%" role="img" aria-label="Curva de temperatura del episodio">`;
+            svg += `<rect x="${PX0}" y="${y(TMAX).toFixed(1)}" width="${PX1 - PX0}" height="${(y(38.5) - y(TMAX)).toFixed(1)}" fill="#F09595" opacity="0.18"/>`;
+            svg += `<rect x="${PX0}" y="${y(38.5).toFixed(1)}" width="${PX1 - PX0}" height="${(y(37.9) - y(38.5)).toFixed(1)}" fill="#F0997B" opacity="0.18"/>`;
+            svg += `<rect x="${PX0}" y="${y(37.9).toFixed(1)}" width="${PX1 - PX0}" height="${(y(37.0) - y(37.9)).toFixed(1)}" fill="#EF9F27" opacity="0.16"/>`;
+            [37, 38, 39, 40].forEach(tp => {
+                const yy = y(tp).toFixed(1);
+                svg += `<line x1="${PX0}" y1="${yy}" x2="${PX1}" y2="${yy}" stroke="#ECEAE3" stroke-width="1"/>`;
+                svg += `<text x="${PX0 - 6}" y="${(y(tp) + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="#9C9A92" font-family="sans-serif">${tp}°</text>`;
+            });
+            const poly = pts.map(p => `${x(p.ms).toFixed(1)},${y(p.temp).toFixed(1)}`).join(' ');
+            svg += `<polyline points="${poly}" fill="none" stroke="#B23A2E" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
+            svg += `<g fill="#B23A2E">` + pts.map(p => `<circle cx="${x(p.ms).toFixed(1)}" cy="${y(p.temp).toFixed(1)}" r="3"/>`).join('') + `</g>`;
+            marks.forEach(m => {
+                const mx = x(m.ms).toFixed(1), c = dcolor[m.fam.key] || '#6B6A63', ini = dinit[m.fam.key] || '•';
+                svg += `<line x1="${mx}" y1="150" x2="${mx}" y2="30" stroke="${c}" stroke-width="1.5" stroke-dasharray="2 3" opacity="0.5"/>`;
+                svg += `<circle cx="${mx}" cy="150" r="6" fill="${c}"/><text x="${mx}" y="153" text-anchor="middle" font-size="8" font-weight="500" fill="#fff" font-family="sans-serif">${ini}</text>`;
+            });
+            const NT = 4;
+            for (let i = 0; i <= NT; i++) { const ms = xMin + (xMax - xMin) * i / NT; svg += `<text x="${x(ms).toFixed(1)}" y="167" text-anchor="middle" font-size="9" fill="#9C9A92" font-family="sans-serif">${formatHM(new Date(ms))}</text>`; }
+            svg += `</svg>`;
+            return svg;
+        }
+
+        // Tarjetas de próxima dosis + alternancia (reutilizadas en Hoy y en Modo Fiebre)
+        function doseCardsHTML(visibleWindows, altHint) {
+            if (!visibleWindows.length) return '';
+            return `<div class="space-y-2.5 mb-4">
+                ${visibleWindows.map(w => w.ready ? `
+                    <div class="bg-[#E1F5EE] border border-[#9FE1CB]/70 rounded-2xl p-4 animate-fade-in">
+                        <div class="flex items-center gap-3">
+                            <div class="w-11 h-11 rounded-2xl bg-[#0F6E56] text-white flex items-center justify-center shrink-0">${I.Check}</div>
+                            <div class="flex-1 min-w-0">
+                                <p class="font-extrabold text-[#0F6E56] text-lg leading-tight">Ya podés dar ${w.label}</p>
+                                <p class="text-xs text-[#085041] font-medium mt-0.5">Última ${w.lastHM} · cada ${w.hours} h · habilitado desde ${w.nextHM} (hace ${formatRemaining(-w.remainingMs)})</p>
+                            </div>
+                        </div>
+                        <button onclick="Actions.logAntipyreticDose('${w.key}')" class="w-full mt-3 py-2.5 bg-[#0F6E56] text-white rounded-xl font-bold text-sm active:scale-95 transition-all flex items-center justify-center gap-2">${I.Plus} Anotar nueva toma ahora</button>
+                    </div>` : `
+                    <div class="bg-surface border border-[#EF9F27]/50 rounded-2xl p-4 shadow-soft animate-fade-in">
+                        <div class="flex items-center gap-3">
+                            <div class="w-11 h-11 rounded-2xl bg-[#FAEEDA] text-[#BA7517] flex items-center justify-center shrink-0">${I.Hourglass}</div>
+                            <div class="flex-1 min-w-0">
+                                <p class="text-[11px] font-bold text-muted uppercase tracking-wider">Próxima dosis de ${w.label}</p>
+                                <p class="font-extrabold text-ink text-xl leading-tight">faltan ${formatRemaining(w.remainingMs)}</p>
+                            </div>
+                            <div class="text-right shrink-0"><p class="text-[10px] text-muted uppercase font-bold tracking-wide">a las</p><p class="font-extrabold text-[#BA7517] text-lg leading-none">${w.nextHM}</p></div>
+                        </div>
+                        <div class="h-2 bg-[#FAEEDA] rounded-full overflow-hidden mt-3"><div class="h-full bg-[#EF9F27] rounded-full transition-all duration-500" style="width: ${w.progress}%"></div></div>
+                        <p class="text-xs text-muted font-medium mt-2">Última ${w.lastHM} · cada ${w.hours} h · desde las ${w.nextHM}</p>
+                        ${(w.key === 'ibuprofeno' && altHint) ? `
+                            <div class="mt-3 pt-3 border-t border-hairline">
+                                <div class="flex items-start gap-2">
+                                    <span class="text-[#534AB7] mt-0.5">${I.Zap}</span>
+                                    <div class="flex-1 min-w-0">
+                                        <p class="text-xs font-bold text-[#534AB7]">Alternancia · si la fiebre no cede</p>
+                                        <p class="text-xs text-muted font-medium mt-0.5">${altHint.state === 'open'
+                                            ? `Ya se puede dar <span class="font-bold text-ink">Novalgina</span> (franja ${altHint.fromHM}–${altHint.toHM})`
+                                            : `<span class="font-bold text-ink">Novalgina</span> como intermedia: ${altHint.fromHM}–${altHint.toHM} <span class="text-muted/70">(en ${formatRemaining(altHint.opensInMs)})</span>`}</p>
+                                        ${altHint.state === 'open' ? `<button onclick="Actions.openOccasionalPrefill('Novalgina')" class="text-xs font-bold text-[#534AB7] mt-1.5 active:opacity-70">Registrar Novalgina →</button>` : ''}
+                                    </div>
+                                </div>
+                            </div>` : ''}
+                    </div>`).join('')}
+                <p class="text-[11px] text-muted/70 px-1 leading-snug">Recordatorio orientativo (incluida la alternancia). Ante dudas, seguí la indicación del pediatra.</p>
+            </div>`;
         }
 
         // --- GAMIFICACIÓN ---
@@ -304,7 +440,10 @@
             ChevronRight: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>',
             Flame: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2c0 4-5 5-5 10a5 5 0 0 0 10 0c0-1.5-.5-2.7-1.2-3.7.2 1.3-.5 2.4-1.3 2.7.5-1.7-.3-3.6-1.5-5C12.5 4.8 12 3.4 12 2Z"/></svg>',
             Trophy: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h8M12 17v4M7 4h10v4a5 5 0 0 1-10 0V4Z"/><path d="M17 5h3v2a3 3 0 0 1-3 3M7 5H4v2a3 3 0 0 0 3 3"/></svg>',
-            Hourglass: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 22h14M5 2h14M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/></svg>'
+            Hourglass: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 22h14M5 2h14M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/></svg>',
+            TrendDown: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></svg>',
+            TrendUp: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>',
+            TrendFlat: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="19" y2="12"/><polyline points="16 9 20 12 16 15"/></svg>'
         };
 
         const store = {
@@ -322,6 +461,7 @@
             meds: [],
             logs: [],
             temps: [],
+            episodes: [],
             // Formulario ahora soporta array de horas
             form: { 
                 name: '', dose: '', times: ['08:00'], trackStock: false, stock: '', minStock: '5',
@@ -340,9 +480,11 @@
                 const { data: dbMeds } = await _db.from('medications').select('*');
                 const { data: dbLogs } = await _db.from('logs').select('*');
                 const { data: dbTemps } = await _db.from('temperatures').select('*');
+                const { data: dbEps } = await _db.from('fever_episodes').select('*'); // tolera tabla inexistente (error → null)
                 store.meds = dbMeds || [];
                 store.logs = dbLogs || [];
                 store.temps = dbTemps || [];
+                store.episodes = dbEps || [];
                 render();
                 startClock();
                 const loader = document.getElementById('loader');
@@ -406,6 +548,29 @@
                 Actions.openModal('occasional');
                 store.form.name = name;
                 render();
+            },
+
+            // --- MODO FIEBRE ---
+            startFeverMode: async () => {
+                setBusy(true);
+                try {
+                    const { data, error } = await _db.from('fever_episodes').insert({ profile_id: store.currentProfile, started_at: new Date().toISOString() }).select();
+                    if (error) throw error;
+                    store.episodes.push(data[0]);
+                    store.view = 'fever';
+                } catch(e) { console.error(e); alert('Error iniciando el modo fiebre'); } finally { setBusy(false); render(); }
+            },
+            endFeverMode: async () => {
+                const ep = activeEpisode(store.currentProfile);
+                if (!ep) { store.view = 'home'; render(); return; }
+                if (!confirm('¿Cerrar el seguimiento de este episodio febril?')) return;
+                setBusy(true);
+                try {
+                    const { data, error } = await _db.from('fever_episodes').update({ ended_at: new Date().toISOString() }).eq('id', ep.id).select();
+                    if (error) throw error;
+                    store.episodes = store.episodes.map(e => e.id === ep.id ? data[0] : e);
+                    store.view = 'home';
+                } catch(e) { console.error(e); alert('Error cerrando el episodio'); } finally { setBusy(false); render(); }
             },
             
             // AHORA RECIBE HORA ESPECIFICA PARA NO CONFUNDIR TOMAS
@@ -769,6 +934,8 @@
                 else if (takenCount === 0) heroMsg = isToday ? 'Arranquemos el día' : 'Día pendiente';
                 else heroMsg = `Vas por ${takenCount} de ${totalCount}`;
 
+                // Modo fiebre activo del perfil (banner de entrada)
+                const feverEp = isToday ? activeEpisode(store.currentProfile) : null;
                 // Ventanas de antipiréticos (solo sobre "ahora", cuando estamos viendo hoy)
                 const doseWindows = isToday ? getAntipyreticWindows(store.currentProfile) : [];
                 const altHint = isToday ? computeAlternation(doseWindows) : null;
@@ -810,45 +977,13 @@
                         </div>
                     </div>
 
-                    ${visibleWindows.length ? `<div class="space-y-2.5 mb-4">
-                        ${visibleWindows.map(w => w.ready ? `
-                            <div class="bg-[#E1F5EE] border border-[#9FE1CB]/70 rounded-2xl p-4 animate-fade-in">
-                                <div class="flex items-center gap-3">
-                                    <div class="w-11 h-11 rounded-2xl bg-[#0F6E56] text-white flex items-center justify-center shrink-0">${I.Check}</div>
-                                    <div class="flex-1 min-w-0">
-                                        <p class="font-extrabold text-[#0F6E56] text-lg leading-tight">Ya podés dar ${w.label}</p>
-                                        <p class="text-xs text-[#085041] font-medium mt-0.5">Última ${w.lastHM} · cada ${w.hours} h · habilitado desde ${w.nextHM} (hace ${formatRemaining(-w.remainingMs)})</p>
-                                    </div>
-                                </div>
-                                <button onclick="Actions.logAntipyreticDose('${w.key}')" class="w-full mt-3 py-2.5 bg-[#0F6E56] text-white rounded-xl font-bold text-sm active:scale-95 transition-all flex items-center justify-center gap-2">${I.Plus} Anotar nueva toma ahora</button>
-                            </div>` : `
-                            <div class="bg-surface border border-[#EF9F27]/50 rounded-2xl p-4 shadow-soft animate-fade-in">
-                                <div class="flex items-center gap-3">
-                                    <div class="w-11 h-11 rounded-2xl bg-[#FAEEDA] text-[#BA7517] flex items-center justify-center shrink-0">${I.Hourglass}</div>
-                                    <div class="flex-1 min-w-0">
-                                        <p class="text-[11px] font-bold text-muted uppercase tracking-wider">Próxima dosis de ${w.label}</p>
-                                        <p class="font-extrabold text-ink text-xl leading-tight">faltan ${formatRemaining(w.remainingMs)}</p>
-                                    </div>
-                                    <div class="text-right shrink-0"><p class="text-[10px] text-muted uppercase font-bold tracking-wide">a las</p><p class="font-extrabold text-[#BA7517] text-lg leading-none">${w.nextHM}</p></div>
-                                </div>
-                                <div class="h-2 bg-[#FAEEDA] rounded-full overflow-hidden mt-3"><div class="h-full bg-[#EF9F27] rounded-full transition-all duration-500" style="width: ${w.progress}%"></div></div>
-                                <p class="text-xs text-muted font-medium mt-2">Última ${w.lastHM} · cada ${w.hours} h · desde las ${w.nextHM}</p>
-                                ${(w.key === 'ibuprofeno' && altHint) ? `
-                                    <div class="mt-3 pt-3 border-t border-hairline">
-                                        <div class="flex items-start gap-2">
-                                            <span class="text-[#534AB7] mt-0.5">${I.Zap}</span>
-                                            <div class="flex-1 min-w-0">
-                                                <p class="text-xs font-bold text-[#534AB7]">Alternancia · si la fiebre no cede</p>
-                                                <p class="text-xs text-muted font-medium mt-0.5">${altHint.state === 'open'
-                                                    ? `Ya se puede dar <span class="font-bold text-ink">Novalgina</span> (franja ${altHint.fromHM}–${altHint.toHM})`
-                                                    : `<span class="font-bold text-ink">Novalgina</span> como intermedia: ${altHint.fromHM}–${altHint.toHM} <span class="text-muted/70">(en ${formatRemaining(altHint.opensInMs)})</span>`}</p>
-                                                ${altHint.state === 'open' ? `<button onclick="Actions.openOccasionalPrefill('Novalgina')" class="text-xs font-bold text-[#534AB7] mt-1.5 active:opacity-70">Registrar Novalgina →</button>` : ''}
-                                            </div>
-                                        </div>
-                                    </div>` : ''}
-                            </div>`).join('')}
-                        <p class="text-[11px] text-muted/70 px-1 leading-snug">Recordatorio orientativo (incluida la alternancia). Ante dudas, seguí la indicación del pediatra.</p>
-                    </div>` : ''}
+                    ${feverEp ? `<button onclick="Actions.setView('fever')" class="w-full mb-4 bg-[#FCEBEB] border border-[#F0997B]/50 rounded-2xl p-3.5 flex items-center gap-3 active:scale-[0.99] transition-all text-left">
+                        <div class="w-10 h-10 rounded-xl bg-[#B23A2E] text-white flex items-center justify-center shrink-0">${I.Thermometer}</div>
+                        <div class="flex-1 min-w-0"><p class="font-bold text-[#A32D2D] leading-tight">Modo fiebre activo</p><p class="text-xs text-[#A32D2D]/70 font-medium">Seguimiento de ${p.name} · tocá para abrir</p></div>
+                        <span class="text-[#A32D2D]">${I.ChevronRight}</span>
+                    </button>` : ''}
+
+                    ${doseCardsHTML(visibleWindows, altHint)}
 
                     ${alerts.length ? `<div class="bg-[#FAEEDA] border border-[#EF9F27]/40 p-3.5 rounded-2xl flex gap-3 mb-4 animate-fade-in"><span class="text-[#BA7517] mt-0.5">${I.Alert}</span><div><p class="font-bold text-sm text-[#854F0B]">Reponer stock</p>${alerts.map(a => `<p class="text-xs text-[#854F0B]/80 mt-0.5 font-medium">• ${a.name}: quedan ${a.stock}</p>`).join('')}</div></div>` : ''}
 
@@ -873,6 +1008,8 @@
                         <button onclick="Actions.openModal('occasional')" class="py-3 bg-surface text-ink border border-hairline rounded-2xl font-bold active:scale-95 transition-all flex flex-col items-center justify-center gap-1 text-xs">${I.Plus} Ocasional</button>
                         <button onclick="Actions.openModal('fever')" class="py-3 bg-[#FCEBEB] text-[#A32D2D] rounded-2xl font-bold active:scale-95 transition-all flex flex-col items-center justify-center gap-1 text-xs">${I.Thermometer} Fiebre</button>
                     </div>
+
+                    ${!feverEp ? `<button onclick="Actions.startFeverMode()" class="w-full mb-5 py-2.5 border border-dashed border-[#F0997B]/60 rounded-2xl text-[#A32D2D] font-bold text-sm active:bg-[#FCEBEB] transition-colors flex items-center justify-center gap-2">${I.Thermometer} Iniciar modo fiebre</button>` : ''}
 
                     <h3 class="font-extrabold text-ink text-lg mb-3 px-1">Agenda</h3>
                     <div class="space-y-2.5">
@@ -944,6 +1081,100 @@
                         <div class="mt-1"><h3 class="font-bold text-ink truncate pr-6">${m.name}</h3><div class="mt-1 flex items-end gap-1"><span class="text-4xl font-extrabold ${low ? 'text-red-500' : 'text-ink'}">${m.stock}</span><span class="text-xs text-muted mb-1.5 font-medium">unid.</span></div>${low ? `<span class="text-[10px] font-bold text-red-500 uppercase tracking-wide">Reponer</span>` : ''}</div>
                         <div class="flex gap-2 mt-2"><button onclick="Actions.updateStock(${m.id}, -1)" class="flex-1 bg-cream text-ink border border-hairline rounded-xl font-bold text-xl py-2 active:scale-95 transition-all">−</button><button onclick="Actions.updateStock(${m.id}, 1)" class="flex-1 ${p.color} text-white rounded-xl font-bold text-xl py-2 active:scale-95 transition-all">+</button></div>
                     </div>`; }).join('')}</div><button onclick="Actions.openModal('regular'); Actions.updateForm('trackStock', true)" class="w-full py-4 border-2 border-dashed border-hairline rounded-3xl text-muted font-bold flex items-center justify-center gap-2 mt-6 active:bg-surface transition-colors">${I.Plus} Añadir stock</button>`;
+
+            } else if (store.view === 'fever') {
+                const ep = activeEpisode(store.currentProfile);
+                if (!ep) {
+                    content = `
+                        <div class="flex items-center gap-2 mb-4">
+                            <button onclick="Actions.setView('home')" class="p-2 -ml-2 text-muted active:bg-cream rounded-xl">${I.ChevronLeft}</button>
+                            <h2 class="font-extrabold text-xl text-ink tracking-tight">Modo fiebre</h2>
+                        </div>
+                        <div class="text-center py-16">
+                            <div class="w-16 h-16 bg-[#FCEBEB] text-[#A32D2D] rounded-full mx-auto mb-3 flex items-center justify-center">${I.Thermometer}</div>
+                            <p class="text-muted font-medium mb-4">No hay un episodio de fiebre activo para ${p.name}.</p>
+                            <button onclick="Actions.startFeverMode()" class="py-3 px-5 bg-[#B23A2E] text-white rounded-2xl font-bold text-sm active:scale-95 transition-all inline-flex items-center gap-2">${I.Thermometer} Iniciar modo fiebre</button>
+                        </div>`;
+                } else {
+                    const ed = episodeData(ep, store.currentProfile);
+                    const last = ed.readings[ed.readings.length - 1];
+                    const lvl = last ? tempLevel(last.temp) : null;
+                    const trend = feverTrend(ed.readings);
+                    const chart = feverChartSVG(ed);
+                    const fw = getAntipyreticWindows(store.currentProfile);
+                    const fAlt = computeAlternation(fw);
+                    const fVisible = fAlt ? fw.filter(w => w.key !== ALTERNATION.interKey) : fw;
+                    const s = ed.stats;
+                    const items = [
+                        ...ed.readings.map(r => ({ kind: 'temp', ms: r.ms, raw: r.raw })),
+                        ...ed.logs.map(l => ({ kind: 'log', ms: l.ms, raw: l.raw, fam: l.fam }))
+                    ].sort((a, b) => b.ms - a.ms);
+                    const startLabel = new Date(ep.started_at).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' }) + ' ' + formatHM(new Date(ep.started_at));
+                    const trendColor = trend ? (trend.dir === 'down' ? 'text-[#0F6E56]' : trend.dir === 'up' ? 'text-[#A32D2D]' : 'text-muted') : '';
+                    const trendIcon = trend ? (trend.dir === 'down' ? I.TrendDown : trend.dir === 'up' ? I.TrendUp : I.TrendFlat) : '';
+
+                    content = `
+                        <div class="flex items-center gap-2 mb-4">
+                            <button onclick="Actions.setView('home')" class="p-2 -ml-2 text-muted active:bg-cream rounded-xl">${I.ChevronLeft}</button>
+                            <div><h2 class="font-extrabold text-xl text-ink tracking-tight leading-none">Modo fiebre · ${p.name}</h2><p class="text-xs text-muted font-medium mt-0.5">Episodio desde ${startLabel}</p></div>
+                        </div>
+
+                        <div class="bg-surface rounded-3xl p-5 shadow-soft border border-hairline mb-4">
+                            ${last ? `<div>
+                                <p class="text-[11px] font-bold text-muted uppercase tracking-wider">Última · ${formatHM(new Date(last.ms))}</p>
+                                <p class="text-5xl font-extrabold leading-none mt-1 ${lvl.text}">${parseFloat(last.temp).toFixed(1)}°</p>
+                                <span class="inline-block mt-2 text-xs font-bold ${lvl.text} ${lvl.bg} px-2.5 py-1 rounded-full">${lvl.label}</span>
+                            </div>
+                            ${trend ? `<div class="flex items-center gap-1.5 mt-3 pt-3 border-t border-hairline ${trendColor} text-sm font-semibold">${trendIcon} Últimas horas: ${trend.text}</div>` : ''}`
+                            : `<p class="text-muted font-medium text-center py-4">Todavía no cargaste temperaturas en este episodio.</p>`}
+                        </div>
+
+                        ${doseCardsHTML(fVisible, fAlt)}
+
+                        <div class="grid grid-cols-2 gap-3 mb-5">
+                            <button onclick="Actions.openModal('fever')" class="py-4 bg-[#B23A2E] text-white rounded-2xl font-bold text-sm shadow-soft active:scale-95 transition-all flex flex-col items-center gap-1.5 text-center">${I.Thermometer}<span>Registrar<br>temperatura</span></button>
+                            <button onclick="Actions.openModal('occasional')" class="py-4 bg-[#0F6E56] text-white rounded-2xl font-bold text-sm shadow-soft active:scale-95 transition-all flex flex-col items-center gap-1.5 text-center">${I.Pill}<span>Registrar<br>toma</span></button>
+                        </div>
+
+                        ${chart ? `<div class="bg-surface rounded-3xl p-4 shadow-soft border border-hairline mb-4">
+                            <p class="text-sm font-extrabold text-ink mb-2 px-1">Tendencia febril</p>
+                            ${chart}
+                            <div class="flex gap-3 flex-wrap mt-1 px-1 text-[11px] text-muted">
+                                <span class="flex items-center gap-1.5"><span style="width:12px;height:2.5px;background:#B23A2E;border-radius:2px;display:inline-block"></span>Temperatura</span>
+                                <span class="flex items-center gap-1.5"><span style="width:9px;height:9px;border-radius:50%;background:#0F6E56;display:inline-block"></span>Ibuprofeno</span>
+                                <span class="flex items-center gap-1.5"><span style="width:9px;height:9px;border-radius:50%;background:#534AB7;display:inline-block"></span>Novalgina</span>
+                            </div>
+                            <div class="grid grid-cols-4 gap-2 mt-3">
+                                <div class="bg-[#FCEBEB] rounded-xl p-2 text-center"><p class="text-base font-extrabold text-[#A32D2D] leading-none">${s.pico != null ? parseFloat(s.pico).toFixed(1) + '°' : '—'}</p><p class="text-[10px] text-[#A32D2D]/70 mt-0.5">pico</p></div>
+                                <div class="bg-cream rounded-xl p-2 text-center"><p class="text-base font-extrabold text-ink leading-none">${s.nLecturas}</p><p class="text-[10px] text-muted mt-0.5">lecturas</p></div>
+                                <div class="bg-cream rounded-xl p-2 text-center"><p class="text-base font-extrabold text-ink leading-none">${s.nTomas}</p><p class="text-[10px] text-muted mt-0.5">tomas</p></div>
+                                <div class="bg-cream rounded-xl p-2 text-center"><p class="text-base font-extrabold text-ink leading-none">${s.cadaHoras != null ? '~' + s.cadaHoras + 'h' : '—'}</p><p class="text-[10px] text-muted mt-0.5">cada</p></div>
+                            </div>
+                        </div>` : `<div class="bg-surface rounded-3xl p-6 shadow-soft border border-hairline mb-4 text-center text-muted text-sm font-medium">Con al menos 2 lecturas vas a ver la curva de tendencia.</div>`}
+
+                        <h3 class="font-extrabold text-ink text-lg mb-3 px-1">Registro del episodio</h3>
+                        <div class="bg-surface rounded-2xl shadow-soft border border-hairline overflow-hidden mb-5">
+                            ${items.length === 0 ? `<p class="text-muted text-sm font-medium text-center py-6">Sin registros todavía.</p>` : items.map((it, idx) => {
+                                const border = idx !== items.length - 1 ? 'border-b border-hairline' : '';
+                                if (it.kind === 'temp') {
+                                    const t = it.raw; const l = tempLevel(t.temp);
+                                    return `<div class="p-3.5 flex justify-between items-center ${border}">
+                                        <div class="flex items-center gap-3"><div class="${l.bg} ${l.text} w-9 h-9 rounded-xl flex items-center justify-center">${I.Thermometer}</div><div><p class="font-bold text-ink">${parseFloat(t.temp).toFixed(1)}° <span class="text-xs font-bold ${l.text}">${l.label}</span></p>${t.note ? `<p class="text-xs text-muted">${t.note}</p>` : ''}</div></div>
+                                        <div class="flex items-center gap-2"><p class="font-bold text-muted text-sm">${t.time}</p><button onclick="Actions.deleteTemp(${t.id})" class="text-hairline active:text-red-500 p-2">${I.Trash}</button></div>
+                                    </div>`;
+                                }
+                                const log = it.raw; const isAnti = !!it.fam;
+                                return `<div class="p-3.5 flex justify-between items-center ${border}">
+                                    <div class="flex items-center gap-3"><div class="${isAnti ? 'bg-[#EEEDFE] text-[#534AB7]' : `${p.light} ${p.text}`} w-9 h-9 rounded-xl flex items-center justify-center">${I.Pill}</div><div><p class="font-bold text-ink">${log.name}</p>${log.dose ? `<p class="text-xs text-muted">${log.dose}</p>` : ''}</div></div>
+                                    <div class="flex items-center gap-2"><p class="font-bold text-muted text-sm">${log.taken_at || log.time}</p><button onclick="Actions.deleteLog(${log.id})" class="text-hairline active:text-red-500 p-2">${I.Trash}</button></div>
+                                </div>`;
+                            }).join('')}
+                        </div>
+
+                        <button onclick="Actions.endFeverMode()" class="w-full py-3.5 bg-surface border border-hairline rounded-2xl text-muted font-bold text-sm active:bg-cream transition-colors flex items-center justify-center gap-2">${I.Check} Terminó la fiebre · cerrar seguimiento</button>
+                        <p class="text-[11px] text-muted/70 px-1 mt-3 text-center leading-snug">Orientativo, para acompañar el seguimiento. La interpretación clínica es del pediatra.</p>
+                    `;
+                }
             }
 
             document.getElementById('app-content').innerHTML = content;
