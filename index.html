@@ -136,22 +136,21 @@
 
         // Tendencia de la fiebre: describe el dato (no diagnostica). points = [{ms, temp}] ascendente.
         function feverTrend(points) {
-            if (!points || points.length < 3) return null;
+            if (!points || points.length < 2) return null;
             const now = points[points.length - 1].ms;
-            let recent = points.filter(p => p.ms >= now - 8 * 3600000);
-            if (recent.length < 3) recent = points.slice(-5);
-            if (recent.length < 3) return null;
-            const t0 = recent[0].ms;
-            const xs = recent.map(p => (p.ms - t0) / 3600000);
-            const ys = recent.map(p => p.temp);
-            const n = xs.length;
-            const sx = xs.reduce((a, b) => a + b, 0), sy = ys.reduce((a, b) => a + b, 0);
-            const sxx = xs.reduce((a, b) => a + b * b, 0), sxy = xs.reduce((a, b, i) => a + b * ys[i], 0);
-            const denom = n * sxx - sx * sx;
-            if (denom === 0) return null;
-            const slope = (n * sxy - sx * sy) / denom; // °/h
-            if (slope < -0.12) return { text: 'la fiebre viene cediendo', dir: 'down' };
-            if (slope > 0.12) return { text: 'la temperatura viene en aumento', dir: 'up' };
+            // Ventana reciente: últimas 14 h; si hay pocas lecturas, las últimas 4
+            let win = points.filter(p => p.ms >= now - 14 * 3600000);
+            if (win.length < 2) win = points.slice(-4);
+            if (win.length < 2) return null;
+            // Comparar promedio de la mitad reciente vs. la anterior (robusto a oscilaciones,
+            // no se diluye en tramos largos como sí lo hacía la pendiente °/h)
+            const half = Math.floor(win.length / 2) || 1;
+            const earlier = win.slice(0, half);
+            const recent = win.slice(-half);
+            const avg = arr => arr.reduce((a, b) => a + b.temp, 0) / arr.length;
+            const diff = avg(recent) - avg(earlier); // °C
+            if (diff <= -0.3) return { text: 'la fiebre viene cediendo', dir: 'down' };
+            if (diff >= 0.3) return { text: 'la temperatura viene en aumento', dir: 'up' };
             return { text: 'se mantiene estable', dir: 'flat' };
         }
 
@@ -190,7 +189,7 @@
         }
 
         // Gráfico SVG de la curva febril del episodio (zonas de 3 niveles + marcas de dosis)
-        function feverChartSVG(ed) {
+        function feverChartSVG(ed, opts = {}) {
             const pts = ed.readings;
             if (pts.length < 2) return null;
             const marks = ed.doseMarks;
@@ -202,7 +201,9 @@
             const y = t => PY0 + (TMAX - t) / (TMAX - TMIN) * (PY1 - PY0);
             const dcolor = { ibuprofeno: '#0F6E56', dipirona: '#534AB7', paracetamol: '#BA7517' };
             const dinit = { ibuprofeno: 'I', dipirona: 'N', paracetamol: 'P' };
-            let svg = `<svg viewBox="0 0 340 172" width="100%" role="img" aria-label="Curva de temperatura del episodio">`;
+            let svg = opts.standalone
+                ? `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 172" width="${opts.width || 680}" height="${opts.height || 344}">`
+                : `<svg viewBox="0 0 340 172" width="100%" role="img" aria-label="Curva de temperatura del episodio">`;
             svg += `<rect x="${PX0}" y="${y(TMAX).toFixed(1)}" width="${PX1 - PX0}" height="${(y(38.5) - y(TMAX)).toFixed(1)}" fill="#F09595" opacity="0.18"/>`;
             svg += `<rect x="${PX0}" y="${y(38.5).toFixed(1)}" width="${PX1 - PX0}" height="${(y(37.9) - y(38.5)).toFixed(1)}" fill="#F0997B" opacity="0.18"/>`;
             svg += `<rect x="${PX0}" y="${y(37.9).toFixed(1)}" width="${PX1 - PX0}" height="${(y(37.0) - y(37.9)).toFixed(1)}" fill="#EF9F27" opacity="0.16"/>`;
@@ -232,6 +233,51 @@
             for (let i = 0; i <= NT; i++) { const ms = xMin + (xMax - xMin) * i / NT; svg += `<text x="${x(ms).toFixed(1)}" y="167" text-anchor="middle" font-size="9" fill="#9C9A92" font-family="sans-serif">${formatHM(new Date(ms))}</text>`; }
             svg += `</svg>`;
             return svg;
+        }
+
+        // Exporta el gráfico del episodio como PNG (con título, fechas y datos) y lo comparte o descarga
+        async function exportFeverChart() {
+            const ep = activeEpisode(store.currentProfile);
+            if (!ep) return;
+            const prof = store.profiles.find(x => x.id === store.currentProfile);
+            const ed = episodeData(ep, store.currentProfile);
+            const s = ed.stats;
+            const chartSvg = feverChartSVG(ed, { standalone: true, width: 680, height: 344 });
+            if (!chartSvg) { alert('Necesitás al menos 2 mediciones para el gráfico.'); return; }
+            // rasterizar el SVG
+            const svgUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(chartSvg);
+            const img = new Image();
+            await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = svgUrl; });
+            try { await document.fonts.ready; } catch(e) {}
+            const scale = 2, W = 720, H = 480;
+            const canvas = document.createElement('canvas');
+            canvas.width = W * scale; canvas.height = H * scale;
+            const ctx = canvas.getContext('2d');
+            ctx.scale(scale, scale);
+            ctx.fillStyle = '#FBFAF7'; ctx.fillRect(0, 0, W, H);
+            ctx.textBaseline = 'top';
+            ctx.fillStyle = '#1C1C1A'; ctx.font = "700 24px 'Plus Jakarta Sans', sans-serif";
+            ctx.fillText(`Tendencia febril · ${prof.name}`, 20, 20);
+            const dm = ms => { const d = new Date(ms); return `${d.getDate()}/${d.getMonth() + 1}`; };
+            ctx.fillStyle = '#6B6A63'; ctx.font = "500 15px 'Plus Jakarta Sans', sans-serif";
+            ctx.fillText(`Episodio ${dm(ed.startMs)} – ${dm(ed.endMs)}`, 20, 52);
+            ctx.drawImage(img, 20, 82, 680, 344);
+            ctx.fillStyle = '#1C1C1A'; ctx.font = "600 16px 'Plus Jakarta Sans', sans-serif";
+            const st = `Pico ${s.pico != null ? parseFloat(s.pico).toFixed(1) + '°' : '—'}     ${s.nLecturas} mediciones     ${s.nTomas} tomas     cada ${s.cadaHoras != null ? '~' + s.cadaHoras + 'h' : '—'}`;
+            ctx.fillText(st, 20, 440);
+            ctx.fillStyle = '#A8A69D'; ctx.font = "400 12px 'Plus Jakarta Sans', sans-serif";
+            ctx.fillText('Orientativo · la interpretación clínica es del pediatra.', 20, 462);
+            const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+            const fileName = `fiebre-${prof.name.toLowerCase()}.png`;
+            const file = new File([blob], fileName, { type: 'image/png' });
+            if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                try { await navigator.share({ files: [file], title: 'Tendencia febril', text: `Tendencia febril de ${prof.name}` }); return; }
+                catch(e) { if (e && e.name === 'AbortError') return; }
+            }
+            // fallback: descargar
+            const dlUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = dlUrl; a.download = fileName; document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(dlUrl), 2000);
         }
 
         // Tarjetas de próxima dosis + alternancia (reutilizadas en Hoy y en Modo Fiebre)
@@ -361,6 +407,11 @@
         function formatHM(date) {
             return String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0');
         }
+        // Fecha corta d/m desde 'YYYY-MM-DD'
+        function shortDM(dateStr) {
+            const p = (dateStr || '').split('-');
+            return p.length === 3 ? `${parseInt(p[2])}/${parseInt(p[1])}` : '';
+        }
         function formatRemaining(ms) {
             if (ms < 0) ms = 0;
             const totalMin = Math.round(ms / 60000);
@@ -452,7 +503,9 @@
             Hourglass: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 22h14M5 2h14M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/></svg>',
             TrendDown: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></svg>',
             TrendUp: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>',
-            TrendFlat: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="19" y2="12"/><polyline points="16 9 20 12 16 15"/></svg>'
+            TrendFlat: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="19" y2="12"/><polyline points="16 9 20 12 16 15"/></svg>',
+            Expand: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>',
+            Share: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>'
         };
 
         const store = {
@@ -471,6 +524,7 @@
             logs: [],
             temps: [],
             episodes: [],
+            chartModal: false,
             // Formulario ahora soporta array de horas
             form: { 
                 name: '', dose: '', times: ['08:00'], trackStock: false, stock: '', minStock: '5',
@@ -581,7 +635,10 @@
                     store.view = 'home';
                 } catch(e) { console.error(e); alert('Error cerrando el episodio'); } finally { setBusy(false); render(); }
             },
-            
+            openChartModal: () => { store.chartModal = true; render(); },
+            closeChartModal: () => { store.chartModal = false; render(); },
+            shareChart: async () => { const btn = document.getElementById('share-chart-btn'); if (btn) btn.textContent = 'Generando…'; try { await exportFeverChart(); } catch(e) { console.error(e); alert('No se pudo generar la imagen'); } if (btn) btn.innerHTML = `${I.Share} Compartir / descargar`; },
+
             // AHORA RECIBE HORA ESPECIFICA PARA NO CONFUNDIR TOMAS
             toggleTaken: async (medId, specificTime) => {
                 setBusy(true);
@@ -738,8 +795,10 @@
             },
 
             saveTemperature: async () => {
-                const tempVal = parseFloat(store.form.temp);
-                if (!store.form.temp || isNaN(tempVal)) { alert("Ingresá una temperatura válida"); return; }
+                // iOS muestra coma en el teclado decimal: aceptamos coma y la normalizamos a punto
+                const raw = String(store.form.temp || '').replace(',', '.').trim();
+                const tempVal = parseFloat(raw);
+                if (!raw || isNaN(tempVal)) { alert("Ingresá una temperatura válida"); return; }
                 setBusy(true);
                 const date = store.selectedDate;
                 const time = store.form.time;
@@ -1146,8 +1205,11 @@
                         </div>
 
                         ${chart ? `<div class="bg-surface rounded-3xl p-4 shadow-soft border border-hairline mb-4">
-                            <p class="text-sm font-extrabold text-ink mb-2 px-1">Tendencia febril</p>
-                            ${chart}
+                            <div class="flex items-center justify-between mb-2 px-1">
+                                <p class="text-sm font-extrabold text-ink">Tendencia febril</p>
+                                <button onclick="Actions.openChartModal()" class="flex items-center gap-1 text-xs font-bold text-[#0F6E56] active:opacity-70">${I.Expand} Ampliar</button>
+                            </div>
+                            <div onclick="Actions.openChartModal()" class="cursor-pointer">${chart}</div>
                             <div class="flex gap-3 flex-wrap mt-1 px-1 text-[11px] text-muted">
                                 <span class="flex items-center gap-1.5"><span style="width:12px;height:2.5px;background:#B23A2E;border-radius:2px;display:inline-block"></span>Temperatura</span>
                                 <span class="flex items-center gap-1.5"><span style="width:9px;height:9px;border-radius:50%;background:#0F6E56;display:inline-block"></span>Ibuprofeno</span>
@@ -1159,7 +1221,7 @@
                                 <div class="bg-cream rounded-xl p-2 text-center"><p class="text-base font-extrabold text-ink leading-none">${s.nTomas}</p><p class="text-[10px] text-muted mt-0.5">tomas</p></div>
                                 <div class="bg-cream rounded-xl p-2 text-center"><p class="text-base font-extrabold text-ink leading-none">${s.cadaHoras != null ? '~' + s.cadaHoras + 'h' : '—'}</p><p class="text-[10px] text-muted mt-0.5 leading-tight">cada (antipir.)</p></div>
                             </div>
-                        </div>` : `<div class="bg-surface rounded-3xl p-6 shadow-soft border border-hairline mb-4 text-center text-muted text-sm font-medium">Con al menos 2 lecturas vas a ver la curva de tendencia.</div>`}
+                        </div>` : `<div class="bg-surface rounded-3xl p-6 shadow-soft border border-hairline mb-4 text-center text-muted text-sm font-medium">Con al menos 2 mediciones vas a ver la curva de tendencia.</div>`}
 
                         <h3 class="font-extrabold text-ink text-lg mb-3 px-1">Registro del episodio</h3>
                         <div class="bg-surface rounded-2xl shadow-soft border border-hairline overflow-hidden mb-5">
@@ -1169,13 +1231,13 @@
                                     const t = it.raw; const l = tempLevel(t.temp);
                                     return `<div class="p-3.5 flex justify-between items-center ${border}">
                                         <div class="flex items-center gap-3"><div class="${l.bg} ${l.text} w-9 h-9 rounded-xl flex items-center justify-center">${I.Thermometer}</div><div><p class="font-bold text-ink">${parseFloat(t.temp).toFixed(1)}° <span class="text-xs font-bold ${l.text}">${l.label}</span></p>${t.note ? `<p class="text-xs text-muted">${t.note}</p>` : ''}</div></div>
-                                        <div class="flex items-center gap-2"><p class="font-bold text-muted text-sm">${t.time}</p><button onclick="Actions.deleteTemp(${t.id})" class="text-hairline active:text-red-500 p-2">${I.Trash}</button></div>
+                                        <div class="flex items-center gap-2"><div class="text-right"><p class="font-bold text-muted text-sm leading-none">${t.time}</p><p class="text-[10px] text-muted/60 mt-0.5">${shortDM(t.date)}</p></div><button onclick="Actions.deleteTemp(${t.id})" class="text-hairline active:text-red-500 p-2">${I.Trash}</button></div>
                                     </div>`;
                                 }
                                 const log = it.raw; const isAnti = !!it.fam;
                                 return `<div class="p-3.5 flex justify-between items-center ${border}">
                                     <div class="flex items-center gap-3"><div class="${isAnti ? 'bg-[#EEEDFE] text-[#534AB7]' : `${p.light} ${p.text}`} w-9 h-9 rounded-xl flex items-center justify-center">${I.Pill}</div><div><p class="font-bold text-ink">${log.name}</p>${log.dose ? `<p class="text-xs text-muted">${log.dose}</p>` : ''}</div></div>
-                                    <div class="flex items-center gap-2"><p class="font-bold text-muted text-sm">${log.taken_at || log.time}</p><button onclick="Actions.deleteLog(${log.id})" class="text-hairline active:text-red-500 p-2">${I.Trash}</button></div>
+                                    <div class="flex items-center gap-2"><div class="text-right"><p class="font-bold text-muted text-sm leading-none">${log.taken_at || log.time}</p><p class="text-[10px] text-muted/60 mt-0.5">${shortDM(log.date)}</p></div><button onclick="Actions.deleteLog(${log.id})" class="text-hairline active:text-red-500 p-2">${I.Trash}</button></div>
                                 </div>`;
                             }).join('')}
                         </div>
@@ -1250,16 +1312,17 @@
                     `;
                 } else {
                     // MODAL DE FIEBRE
-                    const commonTemps = ['37', '37.5', '38', '38.5', '39', '39.5'];
-                    const curTemp = store.form.temp || '';
+                    const commonTemps = ['36', '36.5', '37', '37.5', '38', '38.5', '39', '39.5'];
+                    const curTemp = store.form.temp || '';                          // valor crudo (puede tener coma en iOS)
+                    const curTempNorm = String(curTemp).replace(',', '.');          // normalizado para resaltar el chip
                     modalContent = `
                         <div class="space-y-5">
                             <div class="bg-[#FCEBEB] p-3 rounded-2xl text-[#A32D2D] text-sm font-semibold text-center mb-2 flex items-center justify-center gap-2">${I.Thermometer} Registro de temperatura</div>
                             <div>
                                 <label class="text-xs font-bold text-muted uppercase tracking-wider mb-1.5 block">Temperatura (°C)</label>
-                                <input type="number" inputmode="decimal" step="0.1" value="${curTemp}" oninput="Actions.updateForm('temp', this.value)" class="w-full p-4 bg-cream rounded-2xl font-extrabold text-2xl text-center border border-hairline outline-none focus:ring-2 focus:ring-red-500 transition-all" placeholder="38.0">
+                                <input type="text" inputmode="decimal" value="${curTemp}" oninput="Actions.updateForm('temp', this.value)" class="w-full p-4 bg-cream rounded-2xl font-extrabold text-2xl text-center border border-hairline outline-none focus:ring-2 focus:ring-red-500 transition-all" placeholder="38.5">
                                 <div class="flex gap-2 mt-2 overflow-x-auto no-scrollbar -mx-1 px-1">
-                                    ${commonTemps.map(t => `<button onclick="Actions.updateForm('temp', '${t}'); render()" class="shrink-0 text-sm font-bold px-3 py-1.5 rounded-lg transition-all ${curTemp === t ? 'bg-red-500 text-white' : 'bg-cream text-muted border border-hairline active:scale-95'}">${t}°</button>`).join('')}
+                                    ${commonTemps.map(t => `<button onclick="Actions.updateForm('temp', '${t}'); render()" class="shrink-0 text-sm font-bold px-3 py-1.5 rounded-lg transition-all ${curTempNorm === t ? 'bg-red-500 text-white' : 'bg-cream text-muted border border-hairline active:scale-95'}">${t}°</button>`).join('')}
                                 </div>
                             </div>
                             <div class="flex gap-4">
@@ -1284,6 +1347,38 @@
                         <div class="bg-surface w-full max-w-sm rounded-4xl p-6 shadow-lift animate-slide-up max-h-[88vh] overflow-y-auto no-scrollbar">
                             <div class="flex justify-between items-center mb-6"><h3 class="font-extrabold text-xl text-ink tracking-tight">${store.modalType === 'regular' ? (store.editId ? 'Editar' : 'Nuevo medicamento') : (store.modalType === 'fever' ? 'Fiebre' : 'Toma ocasional')}</h3><button onclick="Actions.closeModal()" class="bg-cream p-2 rounded-full active:scale-90 text-muted transition-transform">${I.X}</button></div>
                             ${modalContent}
+                        </div>
+                    </div>`;
+            } else if (store.chartModal) {
+                const cep = activeEpisode(store.currentProfile);
+                const cprof = store.profiles.find(x => x.id === store.currentProfile);
+                let inner = '';
+                if (cep) {
+                    const ced = episodeData(cep, store.currentProfile);
+                    const csvg = feverChartSVG(ced);
+                    const cs = ced.stats;
+                    inner = csvg
+                        ? `<div class="mb-3">${csvg}</div>
+                           <div class="flex gap-3 flex-wrap mb-3 px-1 text-[11px] text-muted">
+                               <span class="flex items-center gap-1.5"><span style="width:12px;height:2.5px;background:#B23A2E;border-radius:2px;display:inline-block"></span>Temperatura</span>
+                               <span class="flex items-center gap-1.5"><span style="width:9px;height:9px;border-radius:50%;background:#0F6E56;display:inline-block"></span>Ibuprofeno</span>
+                               <span class="flex items-center gap-1.5"><span style="width:9px;height:9px;border-radius:50%;background:#534AB7;display:inline-block"></span>Novalgina</span>
+                           </div>
+                           <div class="grid grid-cols-4 gap-2 mb-4">
+                               <div class="bg-[#FCEBEB] rounded-xl p-2 text-center"><p class="text-base font-extrabold text-[#A32D2D] leading-none">${cs.pico != null ? parseFloat(cs.pico).toFixed(1) + '°' : '—'}</p><p class="text-[10px] text-[#A32D2D]/70 mt-0.5">pico</p></div>
+                               <div class="bg-cream rounded-xl p-2 text-center"><p class="text-base font-extrabold text-ink leading-none">${cs.nLecturas}</p><p class="text-[10px] text-muted mt-0.5 leading-tight">mediciones</p></div>
+                               <div class="bg-cream rounded-xl p-2 text-center"><p class="text-base font-extrabold text-ink leading-none">${cs.nTomas}</p><p class="text-[10px] text-muted mt-0.5">tomas</p></div>
+                               <div class="bg-cream rounded-xl p-2 text-center"><p class="text-base font-extrabold text-ink leading-none">${cs.cadaHoras != null ? '~' + cs.cadaHoras + 'h' : '—'}</p><p class="text-[10px] text-muted mt-0.5 leading-tight">cada (antipir.)</p></div>
+                           </div>`
+                        : `<p class="text-muted text-center py-8 font-medium">Necesitás al menos 2 mediciones para el gráfico.</p>`;
+                }
+                document.getElementById('modal-container').innerHTML = `
+                    <div class="fixed inset-0 bg-ink/60 z-50 flex items-center justify-center p-3 animate-fade-in backdrop-blur-sm">
+                        <div class="bg-surface w-full max-w-xl rounded-3xl p-5 shadow-lift animate-slide-up max-h-[92vh] overflow-y-auto no-scrollbar">
+                            <div class="flex justify-between items-center mb-4"><div><h3 class="font-extrabold text-lg text-ink tracking-tight leading-none">Tendencia febril · ${cprof.name}</h3>${cep ? `<p class="text-xs text-muted font-medium mt-0.5">Episodio desde ${new Date(cep.started_at).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })}</p>` : ''}</div><button onclick="Actions.closeChartModal()" class="bg-cream p-2 rounded-full active:scale-90 text-muted transition-transform">${I.X}</button></div>
+                            ${inner}
+                            <button id="share-chart-btn" onclick="Actions.shareChart()" class="w-full py-3.5 bg-[#0F6E56] text-white rounded-2xl font-bold text-sm active:scale-[0.98] transition-all flex items-center justify-center gap-2">${I.Share} Compartir / descargar</button>
+                            <p class="text-[11px] text-muted/70 px-1 mt-3 text-center leading-snug">Genera una imagen del gráfico con los datos del episodio para mostrar o enviar al pediatra.</p>
                         </div>
                     </div>`;
             } else { document.getElementById('modal-container').innerHTML = ''; }
