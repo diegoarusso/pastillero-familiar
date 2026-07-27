@@ -70,12 +70,26 @@
         const _db = createClient(SUPABASE_URL, SUPABASE_KEY);
 
         // --- HELPERS DE FECHA (SOLUCIÓN AL BUG DE ZONA HORARIA) ---
-        function getLocalToday() {
-            const now = new Date();
-            const year = now.getFullYear();
-            const month = String(now.getMonth() + 1).padStart(2, '0');
-            const day = String(now.getDate()).padStart(2, '0');
+        // Fecha local YYYY-MM-DD de un Date cualquiera
+        function toLocalDateStr(date) {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
             return `${year}-${month}-${day}`;
+        }
+
+        function getLocalToday() {
+            return toLocalDateStr(new Date());
+        }
+
+        // Desde cuándo "existe" un medicamento (no cuenta como incumplido antes de darlo de alta)
+        function medStartDateStr(med) {
+            if (!med) return null;
+            const dates = [];
+            if (med.created_at) { const d = new Date(med.created_at); if (!isNaN(d.getTime())) dates.push(toLocalDateStr(d)); }
+            if (med.start_date) dates.push(med.start_date);
+            if (!dates.length) return null;
+            return dates.sort()[dates.length - 1]; // la más tardía
         }
 
         function getLocalTime() {
@@ -388,15 +402,37 @@
 
         // --- ASISTENTE DE PRÓXIMA DOSIS DE ANTIPIRÉTICOS ---
         // Familias reconocidas y su ventana entre tomas (horas). 6h es el lado seguro (espera ≥ mínimo).
+        // hours = ventana por defecto; doseRules ajusta según la dosis (más miligramos, más espera)
         const ANTIPYRETICS = [
-            { key: 'ibuprofeno', label: 'Ibuprofeno', hours: 6, match: ['ibuprofeno', 'ibupirac', 'ibuflex', 'actron'] },
-            { key: 'paracetamol', label: 'Paracetamol', hours: 6, match: ['paracetamol', 'tafirol', 'febrectal'] },
-            { key: 'dipirona', label: 'Dipirona', hours: 6, match: ['dipirona', 'novalgina', 'metamizol'] }
+            { key: 'ibuprofeno', label: 'Ibuprofeno', hours: 6, match: ['ibuprofeno', 'ibupirac', 'ibuflex', 'actron'],
+              doseRules: [{ minMg: 600, hours: 8 }] },
+            { key: 'paracetamol', label: 'Paracetamol', hours: 6, match: ['paracetamol', 'tafirol', 'febrectal'],
+              doseRules: [{ minMg: 1000, hours: 12 }] },
+            { key: 'dipirona', label: 'Dipirona', hours: 6, match: ['dipirona', 'novalgina', 'metamizol'], doseRules: [] }
         ];
         function matchAntipyretic(name) {
             if (!name) return null;
             const n = name.toLowerCase();
             return ANTIPYRETICS.find(a => a.match.some(m => n.includes(m))) || null;
+        }
+        // Miligramos de una dosis escrita a mano ("600mg", "1g", "1gr"). null si no aplica (ej. "4ml").
+        function doseToMg(doseStr) {
+            if (!doseStr) return null;
+            const m = String(doseStr).toLowerCase().match(/(\d+(?:[.,]\d+)?)\s*(mg|gr|g)\b/);
+            if (!m) return null;
+            const val = parseFloat(m[1].replace(',', '.'));
+            if (isNaN(val)) return null;
+            return m[2] === 'mg' ? val : val * 1000;
+        }
+        // Ventana efectiva entre tomas para una familia + dosis concreta
+        function doseIntervalHours(fam, doseStr) {
+            if (!fam) return 6;
+            const mg = doseToMg(doseStr);
+            if (mg != null && fam.doseRules && fam.doseRules.length) {
+                const rule = [...fam.doseRules].sort((a, b) => b.minMg - a.minMg).find(r => mg >= r.minMg);
+                if (rule) return rule.hours;
+            }
+            return fam.hours;
         }
         // Date local desde 'YYYY-MM-DD' + 'HH:MM' (sin bug de zona horaria; cruza medianoche al sumar horas)
         function parseLocalDateTime(dateStr, timeStr) {
@@ -419,9 +455,9 @@
             const m = totalMin % 60;
             return h > 0 ? `${h} h ${String(m).padStart(2, '0')} m` : `${m} m`;
         }
-        // Ventanas activas por familia (toma más reciente dentro de 12 h de relevancia). Recalcula desde el reloj real.
+        // Ventanas activas por familia (la toma más reciente que siga siendo relevante). Recalcula desde el reloj real.
         function getAntipyreticWindows(profileId) {
-            const RELEVANCE_MS = 12 * 3600000;
+            const GRACE_MS = 6 * 3600000; // cuánto sigue visible la tarjeta después de habilitarse
             const now = new Date();
             const windows = [];
             ANTIPYRETICS.forEach(fam => {
@@ -433,15 +469,18 @@
                 if (!doses.length) return;
                 const last = doses[0];
                 const ageMs = now - last.when;
-                if (ageMs < 0 || ageMs > RELEVANCE_MS) return; // futura o ya no relevante
-                const nextDose = new Date(last.when.getTime() + fam.hours * 3600000);
+                // La ventana depende de la dosis de ESA toma (ej. ibuprofeno 600 espera 8 h, el 400 espera 6 h)
+                const effHours = doseIntervalHours(fam, last.log.dose);
+                // Sigue siendo relevante durante toda su ventana + un margen tras habilitarse
+                if (ageMs < 0 || ageMs > effHours * 3600000 + GRACE_MS) return;
+                const nextDose = new Date(last.when.getTime() + effHours * 3600000);
                 const remainingMs = nextDose - now;
                 windows.push({
-                    key: fam.key, label: fam.label, hours: fam.hours,
+                    key: fam.key, label: fam.label, hours: effHours,
                     lastMs: last.when.getTime(),
                     lastHM: formatHM(last.when), lastName: last.log.name, lastDose: last.log.dose || '',
                     nextHM: formatHM(nextDose), remainingMs, ready: remainingMs <= 0,
-                    progress: Math.max(0, Math.min(100, Math.round((1 - remainingMs / (fam.hours * 3600000)) * 100)))
+                    progress: Math.max(0, Math.min(100, Math.round((1 - remainingMs / (effHours * 3600000)) * 100)))
                 });
             });
             windows.sort((a, b) => a.remainingMs - b.remainingMs);
@@ -449,17 +488,19 @@
         }
 
         // Alternancia: Novalgina (dipirona) como intermedia del Ibuprofeno, a mitad de ventana (3–3:30 h)
-        const ALTERNATION = { anchorKey: 'ibuprofeno', interKey: 'dipirona', interLabel: 'Novalgina', minHours: 3, maxHours: 3.5 };
+        // La intermedia va a mitad de la ventana del ancla (6 h → 3 h; 8 h → 4 h), en una franja de 30 min
+        const ALTERNATION = { anchorKey: 'ibuprofeno', interKey: 'dipirona', interLabel: 'Novalgina', windowFraction: 0.5, spanHours: 0.5 };
         function computeAlternation(windows) {
             if (!windows.length) return null;
             // La toma más reciente entre todas las familias debe ser el ancla (ibuprofeno)
             const mostRecent = windows.reduce((a, b) => (b.lastMs > a.lastMs ? b : a));
             if (mostRecent.key !== ALTERNATION.anchorKey || mostRecent.ready) return null;
             const inter = windows.find(w => w.key === ALTERNATION.interKey);
-            // Dos pisos para la intermedia: mitad de la ventana del ibuprofeno Y su propia ventana de 6 h
+            // Dos pisos para la intermedia: mitad de la ventana efectiva del ibuprofeno Y su propia ventana
             const dipOwnNextMs = inter ? (inter.lastMs + inter.hours * 3600000) : 0;
-            const startMs = Math.max(mostRecent.lastMs + ALTERNATION.minHours * 3600000, dipOwnNextMs);
-            const endMs = startMs + (ALTERNATION.maxHours - ALTERNATION.minHours) * 3600000; // franja de 30 min, nunca colapsa
+            const halfAnchorMs = mostRecent.hours * ALTERNATION.windowFraction * 3600000;
+            const startMs = Math.max(mostRecent.lastMs + halfAnchorMs, dipOwnNextMs);
+            const endMs = startMs + ALTERNATION.spanHours * 3600000; // franja de 30 min, nunca colapsa
             const now = Date.now();
             return {
                 fromHM: formatHM(new Date(startMs)),
@@ -560,6 +601,10 @@
             // El filtro de stock agotado solo aplica al día de hoy: en días pasados
             // queremos poder registrar una toma olvidada aunque hoy esté sin stock.
             if (dateStr === getLocalToday() && med.track_stock && (med.stock === null || med.stock <= 0)) return false;
+            // No cuenta como programado antes de darlo de alta: agregar algo nuevo no debe
+            // generar "incumplimientos" retroactivos en la racha ni en la adherencia.
+            const since = medStartDateStr(med);
+            if (since && dateStr < since) return false;
             const [y, m, d] = dateStr.split('-').map(Number);
             const target = new Date(y, m - 1, d);
             if (!med.frequency_type || med.frequency_type === 'daily') return true;
