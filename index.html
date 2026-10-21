@@ -597,6 +597,45 @@
             else badge.classList.remove('sync-active');
         }
 
+        // --- LOGIN ---
+        function pantallaLogin(msg) {
+            const loader = document.getElementById('loader');
+            if (loader) loader.style.display = 'none';
+            document.getElementById('header-container').innerHTML = '';
+            document.getElementById('nav-container').innerHTML = '';
+            document.getElementById('app-content').innerHTML = `
+                <div class="min-h-full flex flex-col items-center justify-center px-2 py-16">
+                    <div class="bg-[#0F6E56] p-3 rounded-2xl text-white shadow-soft mb-4">${I.Pill}</div>
+                    <h1 class="text-2xl font-extrabold text-ink tracking-tight">Pastillero</h1>
+                    <p class="text-sm text-muted font-medium mt-1 mb-6">Ingresá para ver los registros</p>
+                    <form id="login-form" class="w-full max-w-xs space-y-3">
+                        <input id="li-mail" type="email" inputmode="email" autocomplete="username" placeholder="Email"
+                            class="w-full p-4 bg-surface rounded-2xl border border-hairline outline-none focus:ring-2 focus:ring-[#0F6E56]">
+                        <input id="li-pass" type="password" autocomplete="current-password" placeholder="Contraseña"
+                            class="w-full p-4 bg-surface rounded-2xl border border-hairline outline-none focus:ring-2 focus:ring-[#0F6E56]">
+                        <button type="submit" id="li-btn"
+                            class="w-full py-4 bg-[#0F6E56] text-white rounded-2xl font-bold shadow-soft active:scale-[0.98] transition-all">Entrar</button>
+                        <p id="li-msg" class="text-xs text-center font-semibold text-red-600 min-h-[16px]">${msg || ''}</p>
+                    </form>
+                </div>`;
+            document.getElementById('login-form').onsubmit = async (ev) => {
+                ev.preventDefault();
+                const btn = document.getElementById('li-btn');
+                const out = document.getElementById('li-msg');
+                btn.disabled = true; btn.textContent = 'Entrando…'; out.textContent = '';
+                const { error } = await _db.auth.signInWithPassword({
+                    email: document.getElementById('li-mail').value.trim(),
+                    password: document.getElementById('li-pass').value
+                });
+                if (error) {
+                    btn.disabled = false; btn.textContent = 'Entrar';
+                    out.textContent = 'Email o contraseña incorrectos';
+                } else {
+                    location.reload();
+                }
+            };
+        }
+
         // La API devuelve como máximo 1000 filas por pedido. Sin paginar, al pasar
         // ese tope los registros más nuevos no llegaban nunca: la toma aparecía sin
         // marcar y al volver a marcarla se duplicaba. Pedimos por páginas, ordenando
@@ -615,6 +654,8 @@
         }
 
         async function init() {
+            const { data: { session } } = await _db.auth.getSession();
+            if (!session) { pantallaLogin(); return; }
             try {
                 const dbMeds = await cargarTodo('medications');
                 const dbLogs = await cargarTodo('logs');
@@ -629,7 +670,11 @@
                 const loader = document.getElementById('loader');
                 loader.style.opacity = '0';
                 setTimeout(() => loader.style.display = 'none', 300);
-            } catch(e) { console.error(e); alert("Error de conexión"); }
+            } catch(e) {
+                console.error(e);
+                // Sesión vencida o sin permisos -> volver al login, no un alert genérico
+                pantallaLogin('Tu sesión expiró, ingresá de nuevo');
+            }
         }
 
         function isScheduledForDate(med, dateStr) {
@@ -714,6 +759,11 @@
                     store.episodes = store.episodes.map(e => e.id === ep.id ? data[0] : e);
                     store.view = 'home';
                 } catch(e) { console.error(e); alert('Error cerrando el episodio'); } finally { setBusy(false); render(); }
+            },
+            cerrarSesion: async () => {
+                if (!confirm('¿Cerrar sesión en este dispositivo?')) return;
+                await _db.auth.signOut();
+                location.reload();
             },
             openChartModal: () => { store.chartModal = true; render(); },
             closeChartModal: () => { store.chartModal = false; render(); },
@@ -1233,7 +1283,7 @@
                         <div onclick="Actions.openModal('regular', ${m.id})" class="absolute top-1 right-1 p-3 text-muted/50 active:scale-90 cursor-pointer transition-transform">${I.Edit}</div>
                         <div class="mt-1"><h3 class="font-bold text-ink truncate pr-6">${m.name}</h3><div class="mt-1 flex items-end gap-1"><span class="text-4xl font-extrabold ${low ? 'text-red-500' : 'text-ink'}">${m.stock}</span><span class="text-xs text-muted mb-1.5 font-medium">unid.</span></div>${low ? `<span class="text-[10px] font-bold text-red-500 uppercase tracking-wide">Reponer</span>` : ''}</div>
                         <div class="flex gap-2 mt-2"><button onclick="Actions.updateStock(${m.id}, -1)" class="flex-1 bg-cream text-ink border border-hairline rounded-xl font-bold text-xl py-2 active:scale-95 transition-all">−</button><button onclick="Actions.updateStock(${m.id}, 1)" class="flex-1 ${p.color} text-white rounded-xl font-bold text-xl py-2 active:scale-95 transition-all">+</button></div>
-                    </div>`; }).join('')}</div><button onclick="Actions.openModal('regular'); Actions.updateForm('trackStock', true)" class="w-full py-4 border-2 border-dashed border-hairline rounded-3xl text-muted font-bold flex items-center justify-center gap-2 mt-6 active:bg-surface transition-colors">${I.Plus} Añadir stock</button>`;
+                    </div>`; }).join('')}</div><button onclick="Actions.openModal('regular'); Actions.updateForm('trackStock', true)" class="w-full py-4 border-2 border-dashed border-hairline rounded-3xl text-muted font-bold flex items-center justify-center gap-2 mt-6 active:bg-surface transition-colors">${I.Plus} Añadir stock</button><button onclick="Actions.cerrarSesion()" class="w-full py-3 mt-8 text-muted/60 font-semibold text-xs active:text-muted transition-colors">Cerrar sesión</button>`;
 
             } else if (store.view === 'fever') {
                 const ep = activeEpisode(store.currentProfile);
