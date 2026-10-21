@@ -2,7 +2,7 @@
 
 Una app de seguimiento de medicación y fiebre para toda la familia. La construí para un problema que teníamos en casa todos los días, y hoy la usamos a diario.
 
-**En uso diario en [pastillero-familiar.netlify.app](https://pastillero-familiar.netlify.app/)**
+*App de uso personal, en uso diario por la familia. No hay instancia pública para probar.*
 
 ---
 
