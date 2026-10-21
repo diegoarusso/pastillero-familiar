@@ -2,8 +2,7 @@
 
 Una app de seguimiento de medicación y fiebre para toda la familia. La construí para un problema que teníamos en casa todos los días, y hoy la usamos a diario.
 
-**▶️ Probala acá: [pastillero-familiar.netlify.app?demo=1](https://pastillero-familiar.netlify.app/?demo=1)**
-*(modo demo con una familia y datos ficticios — nada de lo que toques afecta datos reales)*
+**En uso diario en [pastillero-familiar.netlify.app](https://pastillero-familiar.netlify.app/)**
 
 ---
 
@@ -51,10 +50,6 @@ Cuando mi hijo de 5 años entra en un cuadro febril, el cuidado se vuelve un pro
 - **Gráficos**: SVG generado a mano, sin librerías.
 
 Se puede abrir el archivo y entender todo de arriba a abajo. Para una app que tiene que funcionar a las 3 de la mañana, esa simplicidad es una decisión, no una limitación.
-
-## Modo demo
-
-`?demo=1` levanta una familia ficticia con un episodio febril en curso, usando un cliente de datos en memoria que reemplaza a la base. Sirve para mostrar la app sin exponer ni tocar datos de salud reales. Cada recarga vuelve a un estado limpio.
 
 ---
 
