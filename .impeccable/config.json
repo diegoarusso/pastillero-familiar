@@ -1,0 +1,23 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "plus jakarta sans",
+        "createdAt": "2026-08-22T22:38:31.052Z",
+        "reason": "user confirmed: misma tipografía declarada en el CSS del body"
+      },
+      {
+        "rule": "border-accent-on-rounded",
+        "value": "*",
+        "files": [
+          "C:/Cowork/pastillero-familiar/index.html"
+        ],
+        "createdAt": "2026-08-22T22:38:31.289Z",
+        "reason": "falso positivo: es el spinner de carga; el border-top de distinto color sobre un circulo es el mecanismo del spinner CSS, no un acento decorativo"
+      }
+    ]
+  }
+}
