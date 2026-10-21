@@ -100,8 +100,20 @@
                             }
                             return this;
                         },
-                        select() { return Promise.resolve({ data: this._result || rows.slice(), error: null }); },
-                        then(res, rej) { return Promise.resolve({ data: this._result || rows.slice(), error: null }).then(res, rej); }
+                        _order: null, _range: null,
+                        order(col) { this._order = col; return this; },
+                        range(desde, hasta) { this._range = [desde, hasta]; return this; },
+                        select() { return this; },
+                        _data() {
+                            let out = this._result || rows.slice();
+                            if (this._order) {
+                                const c = this._order;
+                                out = out.slice().sort((a, b) => (a[c] > b[c]) - (a[c] < b[c]));
+                            }
+                            if (this._range) out = out.slice(this._range[0], this._range[1] + 1);
+                            return out;
+                        },
+                        then(res, rej) { return Promise.resolve({ data: this._data(), error: null }).then(res, rej); }
                     };
                 }
             };
@@ -654,18 +666,37 @@
             }
         };
 
+        const _enVuelo = new Set();
+
         function setBusy(isBusy) {
             const badge = document.getElementById('sync-status');
             if(isBusy) badge.classList.add('sync-active');
             else badge.classList.remove('sync-active');
         }
 
+        // La API devuelve como máximo 1000 filas por pedido. Sin paginar, al pasar
+        // ese tope los registros más nuevos no llegaban nunca: la toma aparecía sin
+        // marcar y al volver a marcarla se duplicaba. Pedimos por páginas, ordenando
+        // por id para que el corte entre una página y la siguiente sea estable.
+        const PAGINA = 1000;
+        async function cargarTodo(tabla) {
+            const filas = [];
+            for (let desde = 0; ; desde += PAGINA) {
+                const { data, error } = await _db.from(tabla).select('*').order('id').range(desde, desde + PAGINA - 1);
+                if (error) return filas.length ? filas : null;   // tabla inexistente → null, como antes
+                if (!data || !data.length) break;
+                filas.push(...data);
+                if (data.length < PAGINA) break;
+            }
+            return filas;
+        }
+
         async function init() {
             try {
-                const { data: dbMeds } = await _db.from('medications').select('*');
-                const { data: dbLogs } = await _db.from('logs').select('*');
-                const { data: dbTemps } = await _db.from('temperatures').select('*');
-                const { data: dbEps } = await _db.from('fever_episodes').select('*'); // tolera tabla inexistente (error → null)
+                const dbMeds = await cargarTodo('medications');
+                const dbLogs = await cargarTodo('logs');
+                const dbTemps = await cargarTodo('temperatures');
+                const dbEps = await cargarTodo('fever_episodes'); // tolera tabla inexistente (null)
                 store.meds = dbMeds || [];
                 store.logs = dbLogs || [];
                 store.temps = dbTemps || [];
@@ -767,6 +798,11 @@
 
             // AHORA RECIBE HORA ESPECIFICA PARA NO CONFUNDIR TOMAS
             toggleTaken: async (medId, specificTime) => {
+                // Dos toques seguidos sobre la misma toma insertaban dos filas: la
+                // segunda llamada arrancaba antes de que la primera guardara.
+                const enCurso = `${medId}|${store.selectedDate}|${specificTime}`;
+                if (_enVuelo.has(enCurso)) return;
+                _enVuelo.add(enCurso);
                 setBusy(true);
                 const med = store.meds.find(m => m.id === medId);
                 const today = store.selectedDate;
@@ -815,7 +851,7 @@
                         // ¿Recién se completó el 100% del día de hoy?
                         if (isRealToday && !wasComplete && isDayComplete(store.currentProfile, today) === true) celebrateNow = true;
                     }
-                } catch(e) { console.error(e); } finally { setBusy(false); render(); if (celebrateNow) celebrate(store.currentProfile); }
+                } catch(e) { console.error(e); } finally { _enVuelo.delete(enCurso); setBusy(false); render(); if (celebrateNow) celebrate(store.currentProfile); }
             },
 
             deleteLog: async (logId) => {
