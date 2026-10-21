@@ -69,6 +69,22 @@
         const { createClient } = supabase;
         const _db = createClient(SUPABASE_URL, SUPABASE_KEY);
 
+        // El link ?demo=1 se repartio cuando existia la demo publica. Ahora que
+        // no esta, ese link NO tiene que caer en los datos de la familia: corta
+        // antes de init, asi no se le pide nada a la base.
+        const DEMO_CERRADA = new URLSearchParams(location.search).has('demo');
+        function pantallaDemoCerrada() {
+            document.body.innerHTML = `
+                <div class="min-h-screen flex items-center justify-center p-6 text-center">
+                    <div class="max-w-sm">
+                        <p class="text-5xl mb-5">&#128274;</p>
+                        <h1 class="text-xl font-bold text-ink mb-2">La demo ya no esta disponible</h1>
+                        <p class="text-sm text-muted leading-relaxed">Pastillero Familiar es una app de uso
+                        personal. La version de demostracion con datos ficticios se dio de baja.</p>
+                    </div>
+                </div>`;
+        }
+
         // --- HELPERS DE FECHA (SOLUCIÓN AL BUG DE ZONA HORARIA) ---
         // Fecha local YYYY-MM-DD de un Date cualquiera
         function toLocalDateStr(date) {
@@ -1453,7 +1469,7 @@
             } else { document.getElementById('modal-container').innerHTML = ''; }
         }
         window.Actions = Actions;
-        window.onload = init;
+        window.onload = DEMO_CERRADA ? pantallaDemoCerrada : init;
     </script>
 </body>
 </html>
