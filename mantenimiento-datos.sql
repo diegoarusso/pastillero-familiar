@@ -21,10 +21,9 @@
 --
 -- El "name" en la particion NO es decorativo: las tomas ocasionales
 -- tienen med_id nulo, y en SQL los nulos cuentan como iguales entre si.
--- Sin "name" se agrupaban como duplicados cosas distintas cargadas en el
--- mismo minuto (Ibuprofeno con Paracetamol el 31/03, Ibu con Betametasona
--- de Santi el 17/09, Tafirol migra con Factor AG y Aloe vera el 16/05):
--- cinco registros legitimos que no habia que tocar.
+-- Sin "name", dos tomas ocasionales distintas cargadas dentro del mismo
+-- minuto se agrupaban como si fueran la misma y una se habria borrado.
+-- Eran cinco registros legitimos.
 
 -- create table if not exists logs_duplicados_respaldo as
 -- with ranked as (
@@ -39,7 +38,7 @@
 -- =====================================================================
 -- 2) REGISTROS VIEJOS  ·  58 filas archivadas (26/11/2025 al 31/12/2025)
 -- =====================================================================
--- Pedido de Diego: dejar solo lo vigente de este ano. No se borraron:
+-- Pedido: dejar solo lo vigente del ano en curso. No se borraron:
 -- se movieron a logs_archivo_2025, asi que son recuperables.
 -- No habia temperaturas ni episodios febriles en 2025.
 
